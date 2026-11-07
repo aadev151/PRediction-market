@@ -6,7 +6,8 @@ A standalone software factory that plugs into any GitHub repo. Every PR opens a 
 settle on the outcome; rejected ones are refunded. For the hackathon the hidden holdouts, run in a sandbox, stand in for the post-merge outcome
 (`docs/DECISIONS.md` #26–29).
 
-- **Read `REQUIREMENTS.md` first** (why, P0/P1/P2 priorities), then **`PLAN.md`** (how: layout, contracts, work packages in §9).
+- **Start with your work package's section in `PLAN.md` §9** (scope, files, contracts). Read `REQUIREMENTS.md` (why, P0/P1/P2
+  priorities) and the rest of `PLAN.md` (layout, contracts) only when the scope or a contract is unclear.
 - `PLAN_V0.md` is **superseded** and has been removed. Ignore its "Crossroads" app entirely. If an old note mentions it, it's stale.
 - If time runs short, cut P2, then P1. Never cut the market-core tests, the fail-closed behavior, or the demo path.
 
@@ -75,6 +76,8 @@ Before every PR: `ruff check . && ruff format --check . && pytest -q`.
 - Work in your own branch (ideally in your own git worktree), named after the work package: `wp-<letter>/<short-topic>`,
   e.g. `wp-a/lmsr`, `wp-b/signals`, `wp-h/ci-semgrep`. Branch from an up-to-date `main`.
 - Push your branch and open a PR to `main`. CI (`ci` job) must be green before merge.
+- `make check` (ruff + pytest, ~3s) is the local gate. After opening a PR, report back; don't block on CI (~90s: semgrep,
+  gitleaks, pip-audit, docker) unless you are the one merging. Branch protection still refuses a red merge.
 
 ## PRs
 
