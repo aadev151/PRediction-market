@@ -80,7 +80,7 @@ select, button {
 .tile:hover { background: var(--surface-2); }
 .tile .who { font: 600 0.9rem var(--mono); display: flex; min-width: 0; white-space: nowrap; }
 .tile .who .repo { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.tile .who .pr { flex: none; color: var(--blue-text); }
+.tile .who .pr { flex: none; color: var(--blue-text); white-space: pre; }
 .tile .price { font: 800 clamp(2.6rem, 4.5vw, 3.6rem)/1 var(--mono); color: var(--tone); font-variant-numeric: tabular-nums; }
 .tile .gate { font: 600 0.95rem var(--mono); }
 .tile .meta { font-size: 0.8rem; color: var(--muted); display: flex; gap: 0.5rem; flex-wrap: wrap; }
