@@ -15,18 +15,18 @@ from __future__ import annotations
 import codecs
 import os
 import re
-import shutil
-import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
+from prm.settle.git import Git, GitError
 from prm.types import SettlementResult
 
+__all__ = ["GitError", "MergedPR", "Verdict", "evaluate", "settle_postmerge", "window_end"]
+
 DEFAULT_WINDOW_DAYS = 14
-GIT_TIMEOUT_S = 60
 # What makes a later commit that touches the PR's lines a "fix". A refactor or feature that edits them is not.
 FIX_PATTERN = re.compile(r"\b(fix(e[sd])?|bug(fix)?|hotfix|revert(s|ed)?|regression)\b", re.IGNORECASE)
 
@@ -38,10 +38,6 @@ _REF = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./-]*")
 _REVERTS = re.compile(r"This reverts commit ([0-9a-f]{7,40})")
 _HUNK = re.compile(r"@@ -(\d+)(?:,(\d+))? \+")
 _BLAME_HEADER = re.compile(r"([0-9a-f]{40}) \d+ \d+")
-
-
-class GitError(RuntimeError):
-    """git failed or the history doesn't fit the merge we were given. VOIDs the market."""
 
 
 @dataclass(frozen=True)
@@ -97,7 +93,7 @@ def evaluate(
         raise ValueError("invalid branch name")
     deadline = window_end(pr.merged_at, window_days)
     cutoff = min(now, deadline)
-    git = _Git(Path(repo))
+    git = Git(Path(repo))
     merge = git.out("rev-parse", "--verify", "--quiet", f"{pr.merge_sha}^{{commit}}").strip()
     base = git.out("rev-parse", "--verify", "--quiet", f"{pr.base_sha or merge + '^1'}^{{commit}}").strip()
     if git.run("merge-base", "--is-ancestor", merge, branch, check=False).returncode != 0:
@@ -143,7 +139,7 @@ def _ms_since(start: float) -> int:
     return int((time.monotonic() - start) * 1000)
 
 
-def _touches(git: _Git, sha: str, pr_commits: set[str]) -> bool:
+def _touches(git: Git, sha: str, pr_commits: set[str]) -> bool:
     """Does ``sha`` change or delete a line that, in its parent, was last written by one of ``pr_commits``?"""
     diff = git.out(
         "diff", "-U0", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames",
@@ -178,34 +174,3 @@ def _unquote(path: str) -> str:
     if len(path) >= 2 and path[0] == path[-1] == '"':
         return codecs.escape_decode(path[1:-1].encode("utf-8"))[0].decode("utf-8", errors="surrogateescape")
     return path
-
-
-class _Git:
-    def __init__(self, repo: Path) -> None:
-        exe = shutil.which("git")
-        if exe is None:
-            raise GitError("git is not installed")
-        self._base = [exe, "-C", str(repo), "-c", "core.quotePath=false", "--no-pager"]
-        # No factory secrets, no user/system config (aliases, pagers, external tools), never prompt.
-        self._env = {
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-            "LC_ALL": "C",
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_TERMINAL_PROMPT": "0",
-        }
-
-    def run(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-        try:
-            proc = subprocess.run(  # noqa: S603 (fixed argv, shell=False, validated shas and refs)
-                [*self._base, *args], capture_output=True, encoding="utf-8", errors="replace",
-                env=self._env, timeout=GIT_TIMEOUT_S, check=False,
-            )  # fmt: skip
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise GitError(f"git {args[0]}: {type(exc).__name__}") from exc
-        if check and proc.returncode != 0:
-            raise GitError(f"git {args[0]} exited {proc.returncode}")
-        return proc
-
-    def out(self, *args: str) -> str:
-        return self.run(*args).stdout

@@ -16,6 +16,7 @@ from prm.config import (
     render_command,
     render_env,
 )
+from prm.settle.postmerge import DEFAULT_WINDOW_DAYS
 from prm.types import TRADER_ROLES
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -160,6 +161,11 @@ def test_minimal_target_gets_defaults():
     assert "tests/**" in cfg.context.test_globs
     assert cfg.gate.auto_merge is None
     assert cfg.holdouts_dir(Path("/x")) is None
+    assert cfg.postmerge.window_days == DEFAULT_WINDOW_DAYS == 14
+
+
+def test_postmerge_window_is_configurable():
+    assert target("[postmerge]\nwindow_days = 30\n").postmerge.window_days == 30
 
 
 @pytest.mark.parametrize(
@@ -186,6 +192,9 @@ def test_minimal_target_gets_defaults():
         MINIMAL + 'setup = ["pip install {nope}"]\n',
         MINIMAL + '[redteam]\ncommand = "rt --out x.json"\n',  # must write to {findings}
         MINIMAL + "[gate]\nauto_merge = 1.5\n",
+        MINIMAL + "[postmerge]\nwindow_days = 0\n",
+        MINIMAL + "[postmerge]\nwindow_days = 365\n",
+        MINIMAL + '[postmerge]\nfix_pattern = ".*"\n',  # not configurable: an untrusted regex
         MINIMAL + '[context]\ntest_globs = ["/abs/**"]\n',
         MINIMAL.replace('name = "t"', 'name = "t"\nspec = "../../etc/passwd"'),
         MINIMAL.replace('name = "t"', 'name = "t"\nspec = "/etc/passwd"'),

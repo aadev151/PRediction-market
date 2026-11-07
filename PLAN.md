@@ -80,11 +80,9 @@ prm/
   analysis/diffparse.py     parse unified diffs → files, hunks, added/removed lines
   analysis/diffstats.py     src vs test stats via globs
   analysis/signals.py       language-agnostic risk signals (§6.6)
-  settle/sandbox.py         scrubbed-env subprocess runner (+ docker variant, P1)
-  settle/junit.py           parse JUnit XML → counts
-  settle/holdouts.py        sync a private holdouts repo into the cache dir
-  settle/local.py           local driver: settle_tree(head_dir, target_cfg) → SettlementResult
-  settle/remote.py          (P1) verify + apply HMAC-signed results
+  settle/postmerge.py       post-merge oracle: revert / fix-to-the-PR's-lines within N days → NO, else YES (§6.9)
+  settle/repo.py            bare clone per target in the cache dir; settle_merged() for the pipeline
+  settle/git.py             shared git runner (shell=False, isolated config, no secrets in env)
   league/operators.py  league/mutate.py  league/run.py  league/report.py
   github/client.py  github/webhook.py
   pipeline.py               run_pr_market()
@@ -121,6 +119,9 @@ env = { PYTHONPATH = "{head}" }                    # allowlisted extra env; plac
 
 [redteam]                                          # optional
 command = ""                                       # must write findings JSON to {findings}: [{"id","title","severity":"high|low","confirmed":bool}]
+
+[postmerge]                                        # optional: the settlement oracle (§6.9)
+window_days = 14                                   # 1..90: a merged PR must go this long without a revert or fix to its lines
 
 [context]
 test_globs = ["tests/**", "**/test_*.py", "**/*_test.py", "**/*.test.ts", "**/*.spec.ts"]
@@ -351,16 +352,20 @@ class MarketEngine:
   still in between → failure "no consensus (p=0.74)". A rejected or no-consensus market is VOIDed (refund) after the unpaid holdout check. (DECISIONS #26–29)
 - Payout: YES → +yes_shares; NO → +no_shares. Agents don't trade during HUMAN_WINDOW. Humans use the same caps. Agent traders are auto-created per repo from the roster.
 
-### 6.9 Settlement (`prm/settle/`)
-- `holdouts.py`: `ensure_holdouts(target) -> Path`. Uses `holdouts_path` if set, otherwise clones or pulls `holdouts_repo` into `$PRM_CACHE/holdouts/<owner>__<repo>` via
-  `https://x-access-token:${HOLDOUTS_TOKEN}@github.com/...` (**never log the URL**). Failure → an infra error (VOID).
-- `sandbox.py`: `run(cmd: list[str], cwd, env_extra, timeout_s) -> (returncode, duration_ms, timed_out)`. Env = **only** `PATH`, `LANG`, `HOME=<tmp>`, `TMPDIR=<tmp>` plus the target's
-  allowlisted `env`. stdout/stderr go to `DEVNULL`. `shell=False`. P1: a Docker variant `docker run --rm --network none -v head:/work -v holdouts:/holdouts:ro …` when `PRM_SANDBOX=docker`.
-- `junit.py`: sum `tests/failures/errors/skipped` over all `<testsuite>` elements. A missing or invalid file → fall back to the exit code (0 → passed 1/1, else 0/1).
-- `local.py`: `settle_tree(head_dir, target) -> SettlementResult`: copy head to tmp → `setup` → `command` (placeholders filled) → parse JUnit → optional red-team command →
-  outcome YES iff `total > 0 and failures + errors == 0` and no confirmed high finding. Candidate timeout or crash → NO. Missing holdouts → error.
-- `remote.py` (P1): validate the HMAC over the raw body, accept `{market_id, head_sha, holdouts_passed, holdouts_total, findings}` only if the market is GATED and the sha matches.
-- CLI: `prm settle --target examples/sample-target` prints `holdouts 11/12 passed · red team: 0 high`. Counts only.
+### 6.9 Settlement (`prm/settle/`): the post-merge oracle (DECISIONS #26, #57, #58)
+**Built (WP D).** The earlier hidden-holdout settler (`sandbox.py`, `junit.py`, `holdouts.py`, `local.py`, `remote.py`) is superseded and removed:
+settlement no longer runs tests.
+- `postmerge.py`: `evaluate(repo, MergedPR(merge_sha, merged_at, base_sha=None), now=, branch=, window_days=) -> Verdict` (`pending` | `yes` | `no`, with `reason`,
+  `settles_at`, `culprit_sha`). NO as soon as a later commit on the branch within the window says `This reverts commit <a PR commit>`, or matches the fix pattern
+  (`fix|bug|hotfix|revert|regression`) and changes/deletes a line `git blame` (on its parent) attributes to the PR's commits (`base..merge`). YES at
+  `merged_at + window_days`. `settle_postmerge(...)` maps it to a `SettlementResult` (holdout counts 0/0), `None` while pending, an infra error (VOID) on any git failure.
+- `repo.py`: `ensure_repo("owner/repo", cache_dir)` keeps a bare clone in `$PRM_CACHE/repos/<owner>__<repo>` (clone once, then fetch; https-only; a private repo uses
+  `GITHUB_TOKEN` as a github.com-scoped header in git's env, never in argv/URL/config/errors). **`settle_merged(full_name, MergedPR, now=, branch=, cache_dir=, window_days=)`**
+  is the one call the pipeline makes.
+- `git.py`: the shared git runner (`shell=False`, no user/system git config, no factory secrets in env, errors name the subcommand only).
+- **WP E wiring:** on `pull_request` closed+merged store `merge_commit_sha` + `merged_at`; periodically call `settle_merged` for pending merged markets (branch = the PR's
+  base, `window_days = target.postmerge.window_days`) and pass a non-None result to `engine.settle()`. The demo's "fast forward 14 days" passes
+  `now = window_end(merged_at, window_days)`, which yields YES unless a revert/fix was pushed; the bug demo pushes a fix or revert after the merge to settle NO.
 
 ### 6.10 League (`prm/league/`)
 - `operators.py`: **generic** regex operators for Python and JS/TS (applied only to files matching `source_globs` and NOT `test_globs`):
@@ -451,7 +456,7 @@ When the real demo target is chosen (REQUIREMENTS §9), it only needs a `.prm.to
 
 ### 8.1 `CLAUDE.md` (Phase 0)
 Summary + pointers to REQUIREMENTS/PLAN (and "PLAN_V0 is superseded"); the hard rules (REQUIREMENTS §8, verbatim); conventions; commands
-(`make setup | dev | test | lint | smoke-llm | settle-sample | league-sample | demo-bug-local | demo-good-local | tunnel`); "append to docs/DECISIONS.md and docs/AI_LOG.md"; the PR template sections.
+(`make setup | dev | test | lint | smoke-llm | league-sample | demo-bug-local | demo-good-local | tunnel`); "append to docs/DECISIONS.md and docs/AI_LOG.md"; the PR template sections.
 
 ### 8.2 Hook (P1): `.claude/settings.json` + `scripts/guard.py`
 ```json
@@ -510,7 +515,7 @@ PRM_SANDBOX=subprocess
 | **A: Market core** | `lmsr.py`, `state.py`, `engine.py`, `db.py`, `models.py` + tests | Phase 0 | 50 min | §6.3/§6.7 tests green; the engine runs create→settle with fake beliefs; payout/void/idempotency tests pass |
 | **B: Traders** | `llm.py`, `fake.py`, `replay.py`, `context.py`, `roster.py`, prompts, `diffparse.py`, `diffstats.py`, `signals.py` + tests | Phase 0 | 60 min | 4 contexts with correct slices (test); signals unit-tested; `make smoke-llm` returns a Belief from each model |
 | **C: Sample target** | §7: the app, its tests, spec, fixture holdouts, `.prm.toml`, patches | Phase 0 | 40 min | its own tests pass; the holdouts pass on clean code and fail with `bug_auth.patch` applied |
-| **D: Settlement** | `sandbox.py`, `junit.py`, `holdouts.py`, `local.py` + tests | Phase 0, C | 45 min | `prm settle --target examples/sample-target` → counts only; the env-scrub test proves `ANTHROPIC_API_KEY` is not visible in the sandbox; timeout → NO |
+| **D: Settlement** | `postmerge.py`, `repo.py`, `git.py`, `[postmerge]` config + tests (§6.9, DECISIONS #57/#58) | Phase 0 | 45 min | **Done.** revert/fix-to-the-PR's-lines within the window → NO, quiet window → YES, fast-forwardable clock; git failures VOID; the env-scrub test proves no factory secret reaches git |
 | **E: Pipeline + server + GitHub** | `github/*`, `pipeline.py`, `server.py`, `cli.py` | A, B, D | 60 min | the e2e test passes; `prm demo bug --local` shows up on the dashboard; with a webhook, a real PR on a test repo gets a `pr-market` status |
 | **F: Dashboard** | `dashboard/*` (andon, market, how) | E's API shape (can mock from Phase 0 types) | 60 min | pages render real data, look good on a projector and a phone |
 | **G: League** | `operators.py`, `mutate.py`, `run.py`, `report.py`, `/league` page data | A, B, C, D | 60 min | `prm league --target examples/sample-target --n 120` finishes in under 10 min; `docs/LEAGUE.md` has the Brier table with n + CI, calibration and gate economics |

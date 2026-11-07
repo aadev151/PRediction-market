@@ -126,8 +126,9 @@ information, and the price is the merge gate. Markets beat averaging because tra
 - **R-DOG-1 (P1 goal)** **Dogfooding.** The factory gates its own repo (it has a `.prm.toml` and its own private holdouts) once live, so we show "n real PRs priced today".
 
 ### 4.5 Settlement (the oracle)
-- **R-SET-0 (product)** The real oracle: a merged PR settles NO if it is reverted or a fix commit touches its added lines within N days (default 14), else YES
-  at day N; NO settles as soon as it is observed (DECISIONS #26). **P1:** a revert-detection settler (`settle/postmerge.py`). Until then R-SET-1 stands in.
+- **R-SET-0 (P0, built)** The real oracle: a merged PR settles NO if it is reverted or a fix commit touches its added lines within N days (default 14), else YES
+  at day N; NO settles as soon as it is observed (DECISIONS #26). Built in `settle/postmerge.py` + `settle/repo.py` (PLAN §6.9). **It replaces R-SET-1..4
+  for settlement (DECISIONS #57, #58):** the demo fast-forwards the clock instead of running holdouts. R-SET-5's "counts only" still binds anything that runs holdouts.
 - **R-SET-1 (P0, hackathon stand-in)** Outcome YES iff the holdout suite passes (JUnit: ≥1 test, 0 failures, 0 errors) AND no confirmed high-severity red-team finding
   (if a red-team command is configured). Merged markets pay out on it; rejected markets run it as an unpaid check only.
 - **R-SET-2 (P0)** **Local driver:** the factory downloads the PR head tree, syncs holdouts from the private repo, and runs `setup` + `settle.command` in a **sandboxed subprocess**:
