@@ -15,7 +15,8 @@ from prm.config import RuntimeEnv, ServerConfig
 from prm.server import create_app
 
 STATIC = Path(__file__).resolve().parents[2] / "prm" / "dashboard" / "static"
-PAGES = {"/": "index.html", "/m/1": "market.html"}  # route -> file; each page PR adds its row
+# route -> file; each page PR adds its row
+PAGES = {"/": "index.html", "/m/1": "market.html", "/how": "how.html"}
 CDN_SCRIPT = re.compile(r"^https://cdnjs\.cloudflare\.com/ajax/libs/[\w.-]+/\d+\.\d+\.\d+/[\w./-]+\.js$")
 FONTS = "https://fonts.googleapis.com/"
 
@@ -106,6 +107,19 @@ def test_js_imports_resolve_and_avoid_html_sinks(js):
         assert sink not in text, f"{js} uses {sink}; build nodes with h()/textContent instead"
     for mod in re.findall(r'from\s+"(\./[\w.-]+\.js)"', text):
         assert (STATIC / mod).is_file(), f"{js} imports missing {mod}"
+
+
+def test_how_page_links_only_tests_that_exist():
+    """The invariants list on /how names real tests, and each link points at the file it names."""
+    root = STATIC.parents[2]
+    html = (STATIC / "how.html").read_text(encoding="utf-8")
+    link = r'href="https://github\.com/[\w.-]+/[\w.-]+/blob/main/([\w/.]+)"><code>([\w/.]+)::(test_\w+)<'
+    cited = re.findall(link, html)
+    assert len(cited) >= 15
+    for href_path, path, name in cited:
+        assert href_path == path, (href_path, path)
+        source = (root / path).read_text(encoding="utf-8")
+        assert re.search(rf"^(async )?def {name}\(", source, re.M), f"{path}::{name}"
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
