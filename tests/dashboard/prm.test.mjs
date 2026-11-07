@@ -3,8 +3,44 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
-  diffLineClass, fmtMs, fmtPrice, fmtUsd, githubUrl, marketLabel, marketStatus, parseDiff, safeHref,
+  calibrationPoints, diffLineClass, fmtCi, fmtMs, fmtNum, fmtPct, fmtPrice, fmtUsd, githubUrl, marketLabel,
+  marketStatus, methodRows, parseDiff, safeHref,
 } from "../../prm/dashboard/static/prm.js";
+
+test("methodRows keeps a fixed order, skips missing methods and surfaces the honesty flags", () => {
+  const s = (brier, extra = {}) => ({ n: 40, brier, brier_ci: [0.12, 0.22], log_loss: 0.8, log_loss_ci: [0.6, 1], ...extra });
+  const rows = methodRows({
+    base_rate: s(0.24, { flag: "in-sample", rate: 0.6 }),
+    market: s(0.17),
+    best_single: s(0.2, { flag: "chosen in hindsight", trader: "coverage" }),
+  });
+  assert.deepEqual(rows.map((r) => r.key), ["market", "best_single", "base_rate"]);
+  assert.equal(rows[0].note, "");
+  assert.equal(rows[1].note, "coverage · chosen in hindsight");
+  assert.equal(rows[2].note, "rate 0.60 · in-sample");
+  assert.deepEqual([rows[0].brier, rows[0].brierCi, rows[0].n], [0.17, [0.12, 0.22], 40]);
+  assert.deepEqual(methodRows(undefined), []);
+});
+
+test("calibrationPoints drops empty bins and sizes bubbles by n", () => {
+  const pts = calibrationPoints([
+    { bin: [0, 0.1], n: 0, mean_p: null, observed: null },
+    { bin: [0.4, 0.5], n: 4, mean_p: 0.46, observed: 0.25 },
+    { bin: [0.9, 1], n: 16, mean_p: 0.94, observed: 1 },
+  ]);
+  assert.deepEqual(pts.map((p) => [p.x, p.y, p.n]), [[0.46, 0.25, 4], [0.94, 1, 16]]);
+  assert.ok(pts[1].r > pts[0].r);
+  assert.equal(pts[1].r, 18);
+  assert.deepEqual(calibrationPoints(null), []);
+});
+
+test("report formatters", () => {
+  assert.equal(fmtPct(33.333), "33.3%");
+  assert.equal(fmtPct(null), "—");
+  assert.equal(fmtNum(0.27401), "0.274");
+  assert.equal(fmtCi([0.1875, 0.3766]), "[0.188, 0.377]");
+  assert.equal(fmtCi(null), "—");
+});
 
 const base = { id: 1, repo: "acme/widgets", pr_number: 7, source: "github", escalations: 0, gate_description: null };
 const m = (over) => ({ ...base, ...over });

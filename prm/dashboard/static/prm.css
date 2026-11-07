@@ -196,3 +196,16 @@ svg.sm { display: block; width: 100%; min-width: 760px; height: auto; }
 pre.code { font: 0.85rem/1.5 var(--mono); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem 1rem; overflow-x: auto; margin: 0.5rem 0 0; }
 @media (max-width: 900px) { .flow { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 520px) { .gate-strip, .flow { grid-template-columns: minmax(0, 1fr); } }
+
+/* ------------------------------------------------------------------ league page */
+.two-col { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-bottom: 14px; }
+main > div > section.card { margin-bottom: 14px; }
+.chart-box.square { height: clamp(260px, 38vh, 420px); }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; background: transparent; color: var(--muted); cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--blue); color: #fff; }
+tr.hl td { background: rgba(31, 59, 255, 0.14); font-weight: 700; }
+.ci-bar { position: relative; display: inline-block; width: 160px; height: 10px; border-radius: 5px; background: var(--surface-2); vertical-align: middle; }
+.ci-range { position: absolute; top: 2px; height: 6px; border-radius: 3px; background: rgba(125, 141, 255, 0.55); }
+.ci-dot { position: absolute; top: -1px; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: var(--yellow); }
+@media (max-width: 900px) { .two-col { grid-template-columns: minmax(0, 1fr); } }
