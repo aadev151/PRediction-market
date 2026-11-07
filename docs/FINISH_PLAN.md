@@ -11,7 +11,7 @@ Written 2026-11-07 16:25 EST, after WP J merged. Supersedes the remaining rows o
 | `make demo-bug-local`: blocked p=0.43, settled NO, market right | Real Claude traders never run end to end (all runs so far used the fake LLM) |
 | `make demo-good-local`: auto-merge p=0.91, settled YES, market right | `docs/LEAGUE.md` numbers come from **fake** beliefs (labeled as such) |
 | Dashboard: andon, market, league, how, judge, live | README is a stub; `docs/INTEGRATING.md` doesn't exist |
-| Judge betting end to end (QR → bet → settle → leaderboard) | Real PRs stop at GATED (merge-event settlement isn't wired) |
+| Judge betting end to end (QR → bet → settle → leaderboard) | ~~Real PRs stop at GATED~~ merge webhook + "Fast-forward 14 days" button (#73) |
 
 ## Steps (in order, each time-boxed)
 
@@ -63,11 +63,13 @@ Every teammate does the 60 s pitch (PLAN §11) and can explain LMSR + fail-close
 ## Demo run of show (what's open on screen)
 1. The GitHub PR list on the test repo: the red bug PR, the green good PR.
 2. `/m/<bug market>`: price chart (the security trader sells), gate "blocked", rationales.
-3. **Settlement:** real PRs stay GATED, so show the settled local market from `make demo-bug-local`
-   ("hidden tests: N/M passed · settled NO · market right") and say that.
+3. **Settlement (DECISIONS #73):** merge the good PR on GitHub, open its market page, press **Fast-forward 14
+   days** → "settled YES · market right", and the PR's `pr-market` status updates. For a NO: merge a PR, push a
+   `git revert` (or a `fix:` commit touching its lines) to `main`, then fast-forward → "settled NO". The bug PR
+   stays blocked (unmerged), which is the point.
 4. `/league` → `/how` → `docs/AI_LOG.md`.
 5. `/live` on the projector + the QR → judges bet → Close & settle → leaderboard.
 
 ## Cut list (don't start these)
-Merge-event settlement for real PRs · remote settlement (P1) · `prm demo bug` without `--local` ·
+A background settlement poller (the button covers the demo) · remote settlement (P1) · `prm demo bug` without `--local` ·
 WP L retire/respawn (P2) · the judge demo inside the Docker image (the demo runs from a laptop over the tunnel).

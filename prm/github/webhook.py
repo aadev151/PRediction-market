@@ -12,6 +12,7 @@ import re
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 SIGNATURE_PREFIX = "sha256="
@@ -84,6 +85,50 @@ def classify_pr_event(event_name: str, payload: Any) -> PREvent | str:
     if not (isinstance(base_sha, str) and _SHA.match(base_sha)):
         return "malformed payload"
     return PREvent(repo=repo, pr_number=number, head_sha=head_sha, base_sha=base_sha, action=action)
+
+
+@dataclass(frozen=True)
+class MergeEvent:
+    repo: str
+    pr_number: int
+    head_sha: str
+    merge_sha: str
+    merged_at: datetime
+    branch: str
+
+
+_BRANCH = re.compile(r"^[A-Za-z0-9._/-]{1,255}$")
+
+
+def classify_merge_event(event_name: str, payload: Any) -> MergeEvent | str:
+    """A merged, same-repo ``pull_request`` ``closed`` event, or a short reason it isn't one."""
+    if event_name != "pull_request" or _get(payload, "action") != "closed":
+        return "not a merge"
+    pr = _get(payload, "pull_request")
+    if not isinstance(pr, dict) or pr.get("merged") is not True:
+        return "closed without merging"
+    repo = _get(payload, "repository", "full_name")
+    if (
+        not isinstance(repo, str)
+        or not valid_repo_name(repo)
+        or _get(pr, "head", "repo", "full_name") != repo
+    ):
+        return "fork or malformed pull request"
+    number, head_sha, merge_sha = pr.get("number"), _get(pr, "head", "sha"), pr.get("merge_commit_sha")
+    branch, merged_at = _get(pr, "base", "ref"), pr.get("merged_at")
+    if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+        return "malformed payload"
+    if not all(isinstance(s, str) and _SHA.match(s) for s in (head_sha, merge_sha)):
+        return "malformed payload"
+    if not (isinstance(branch, str) and _BRANCH.match(branch) and ".." not in branch):
+        return "malformed payload"
+    try:
+        when = datetime.fromisoformat(str(merged_at).replace("Z", "+00:00"))
+    except ValueError:
+        return "malformed payload"
+    if when.tzinfo is None:
+        return "malformed payload"
+    return MergeEvent(repo, number, head_sha, merge_sha, when.astimezone(UTC), branch)
 
 
 def parse_pr_event(event_name: str, payload: dict) -> PREvent | None:

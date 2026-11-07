@@ -86,3 +86,17 @@ def test_every_in_memory_spelling_shares_one_database(url):
 @pytest.mark.parametrize("url", ["sqlite:///prm.db", "sqlite+pysqlite:////tmp/x.db", "postgresql://u@h/db"])
 def test_file_and_server_urls_are_not_memory(url):
     assert not is_sqlite_memory(url)
+
+
+def test_init_db_adds_missing_nullable_columns_to_an_old_database(tmp_path):
+    engine = make_engine(f"sqlite:///{tmp_path / 'old.db'}")
+    init_db(engine)
+    with engine.begin() as conn:  # simulate a database made before the merge columns existed
+        for col in ("merge_sha", "merged_at", "merge_branch"):
+            conn.execute(text(f"ALTER TABLE markets DROP COLUMN {col}"))
+    assert "merge_sha" not in {c["name"] for c in inspect(engine).get_columns("markets")}
+    init_db(engine)
+    init_db(engine)  # idempotent
+    assert {"merge_sha", "merged_at", "merge_branch"} <= {
+        c["name"] for c in inspect(engine).get_columns("markets")
+    }

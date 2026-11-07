@@ -91,6 +91,10 @@ class Market(Base):
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     league_run_id: Mapped[int | None] = mapped_column(ForeignKey("league_runs.id"))
+    # Set by the merge webhook on a GATED github market; the post-merge settler reads them (DECISIONS #73).
+    merge_sha: Mapped[str | None] = mapped_column(String(64))
+    merged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    merge_branch: Mapped[str | None] = mapped_column(String(255))
     version_id: Mapped[int] = mapped_column(default=1)
     __mapper_args__ = {"version_id_col": version_id}
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import Engine, create_engine, event, make_url
+from sqlalchemy import DDL, Engine, create_engine, event, inspect, make_url
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -41,8 +41,23 @@ def make_engine(url: str) -> Engine:
 
 
 def init_db(engine: Engine) -> None:
-    """Create any missing tables. Idempotent."""
+    """Create any missing tables, then add any missing *nullable* columns to existing ones. Idempotent.
+
+    ``create_all`` never alters a table, so a database made before a column was added would fail every query
+    on that table. Only nullable columns are added (existing rows get NULL); anything else is left alone.
+    """
     Base.metadata.create_all(engine)
+    insp = inspect(engine)
+    quote = engine.dialect.identifier_preparer.quote
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            have = {c["name"] for c in insp.get_columns(table.name)}
+            for col in table.columns:
+                if col.name not in have and col.nullable and not col.primary_key:
+                    # Identifiers come from our own metadata (never user input) and are quoted anyway.
+                    col_type = col.type.compile(engine.dialect)
+                    ddl = f"ALTER TABLE {quote(table.name)} ADD COLUMN {quote(col.name)} {col_type}"
+                    conn.execute(DDL(ddl))
 
 
 def make_session_factory(source: str | RuntimeEnv | Engine) -> sessionmaker[Session]:

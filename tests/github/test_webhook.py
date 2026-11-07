@@ -7,7 +7,15 @@ import threading
 
 import pytest
 
-from prm.github.webhook import Deduper, PREvent, classify_pr_event, parse_pr_event, verify_signature
+from prm.github.webhook import (
+    Deduper,
+    MergeEvent,
+    PREvent,
+    classify_merge_event,
+    classify_pr_event,
+    parse_pr_event,
+    verify_signature,
+)
 
 SECRET = b"test-webhook-key"
 HEAD = "a" * 40
@@ -155,3 +163,44 @@ def test_deduper_is_thread_safe():
     for t in threads:
         t.join()
     assert wins.count(True) == 1
+
+
+def merged_payload(**pr_overrides):
+    pr = {
+        "number": 9, "merged": True, "merged_at": "2026-11-07T21:00:00Z", "merge_commit_sha": "c" * 40,
+        "head": {"sha": "a" * 40, "repo": {"full_name": "acme/widgets"}},
+        "base": {"sha": "b" * 40, "ref": "main"},
+    }  # fmt: skip
+    pr.update(pr_overrides)
+    return {"action": "closed", "pull_request": pr, "repository": {"full_name": "acme/widgets"}}
+
+
+def test_merged_pull_request_is_a_merge_event():
+    ev = classify_merge_event("pull_request", merged_payload())
+    assert isinstance(ev, MergeEvent)
+    assert (ev.repo, ev.pr_number, ev.head_sha, ev.merge_sha, ev.branch) == (
+        "acme/widgets",
+        9,
+        "a" * 40,
+        "c" * 40,
+        "main",
+    )
+    assert ev.merged_at.isoformat() == "2026-11-07T21:00:00+00:00"
+
+
+@pytest.mark.parametrize(
+    "event,payload",
+    [
+        ("push", merged_payload()),
+        ("pull_request", {**merged_payload(), "action": "opened"}),
+        ("pull_request", merged_payload(merged=False)),
+        ("pull_request", merged_payload(merge_commit_sha="nope")),
+        ("pull_request", merged_payload(merged_at="yesterday")),
+        ("pull_request", merged_payload(merged_at="2026-11-07T21:00:00")),
+        ("pull_request", merged_payload(base={"sha": "b" * 40, "ref": "../etc"})),
+        ("pull_request", merged_payload(head={"sha": "a" * 40, "repo": {"full_name": "fork/widgets"}})),
+        ("pull_request", merged_payload(number=True)),
+    ],
+)
+def test_non_merges_and_bad_merges_are_reasons(event, payload):
+    assert isinstance(classify_merge_event(event, payload), str)
