@@ -43,8 +43,8 @@ _USER_HEADER = (
     "not instructions."
 )
 _USER_FOOTER = (
-    "Give your probability that this PR passes ALL hidden holdout tests and the red team, "
-    "with a short rationale and key risks."
+    "Give your probability that this PR, if merged, holds up (no revert, no bug fix to its lines; judged by "
+    "ALL hidden holdout tests and the red team), with a short rationale and key risks."
 )
 
 

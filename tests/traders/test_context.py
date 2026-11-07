@@ -103,3 +103,11 @@ def test_redact_canary_explicit(canary, expected):
 def test_description_never_reaches_non_skeptics(bundle):
     ctxs = build_contexts(bundle)
     assert [r for r, c in ctxs.items() if DESCRIPTION in c.user_prompt] == ["skeptic"]
+
+
+def test_traders_are_asked_the_post_merge_question(bundle):
+    """DECISIONS #26/#29: the market predicts 'holds up after merge'; the hidden tests are its stand-in."""
+    for ctx in build_contexts(bundle).values():
+        assert "if this PR is merged, will it hold up" in ctx.system_prompt
+        assert "not be reverted" in ctx.system_prompt and "hidden tests" in ctx.system_prompt
+        assert "if merged, holds up" in ctx.user_prompt

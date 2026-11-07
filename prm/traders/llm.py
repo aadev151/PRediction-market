@@ -32,7 +32,10 @@ ABSTAIN_STOP_REASONS = frozenset({"refusal", "max_tokens"})
 
 class Belief(BaseModel):
     p_yes: float = Field(
-        description="Probability in [0,1] that this PR passes ALL hidden holdout tests and the red team"
+        description=(
+            "Probability in [0,1] that this PR, if merged, holds up: no revert and no bug fix to its lines "
+            "(judged by ALL hidden holdout tests and the red team)"
+        )
     )
     rationale: str = Field(description="At most 3 sentences")
     key_risks: list[str] = Field(description="At most 3 short items")
