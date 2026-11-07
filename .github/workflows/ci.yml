@@ -74,3 +74,10 @@ jobs:
             echo "::error::holdout canary found in history, commits: $leaked"
             exit 1
           fi
+
+      - name: docker build + smoke (non-root, config baked in, no .env)
+        run: |
+          docker build --tag prm:ci .
+          test "$(docker run --rm prm:ci id -u)" != "0"
+          docker run --rm prm:ci prm validate
+          docker run --rm prm:ci sh -c 'test ! -e /app/.env && test ! -e /app/examples'
