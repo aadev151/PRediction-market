@@ -52,7 +52,6 @@ make lint             # ruff check + ruff format --check
 make fmt              # auto-fix
 make check            # lint + test: run before every PR
 make smoke-llm        # one real call per configured model            (WP B)
-make settle-sample    # settle the sample target, counts only         (WP C, D)
 make league-sample    # league on the sample target                   (WP G)
 make demo-bug-local   # offline market on bug_auth.patch              (WP E)
 make demo-good-local  # offline market on good_docstring.patch        (WP E)

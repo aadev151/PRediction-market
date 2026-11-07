@@ -323,6 +323,12 @@ class RedteamSection(_Strict):
         return bool(self.command.strip())
 
 
+class PostmergeSection(_Strict):
+    """Post-merge oracle (DECISIONS #26, #57): how long a merged PR must go without a revert or fix."""
+
+    window_days: int = Field(14, ge=1, le=90)
+
+
 class ContextSection(_Strict):
     test_globs: list[str] = Field(
         default_factory=lambda: ["tests/**", "**/test_*.py", "**/*_test.py", "**/*.test.ts", "**/*.spec.ts"]
@@ -353,6 +359,7 @@ class TargetConfig(_Strict):
     target: TargetSection
     settle: SettleSection
     redteam: RedteamSection = RedteamSection()
+    postmerge: PostmergeSection = PostmergeSection()
     context: ContextSection = ContextSection()
     gate: TargetGateOverrides = TargetGateOverrides()
 
