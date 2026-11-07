@@ -46,7 +46,7 @@ function tile(m) {
   const st = marketStatus(m);
   return h("a", { class: `tile tone-${st.tone}`, href: `/m/${Number(m.id)}`, "aria-label": `${marketLabel(m)}: ${st.label}` },
     h("div", { class: "who", title: marketLabel(m) },
-      h("span", { class: "repo" }, m.repo), m.pr_number != null ? h("span", { class: "pr" }, `#${m.pr_number}`) : null),
+      h("span", { class: "repo" }, m.repo), h("span", { class: "pr" }, m.pr_number != null ? `#${m.pr_number}` : ` · market ${m.id}`)),
     h("div", { class: "price" }, fmtPrice(m.price)),
     h("div", { class: "gate" }, st.label),
     h("div", { class: "meta" },
