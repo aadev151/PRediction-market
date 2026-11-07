@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PRediction Market · How it works</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600;700;800&display=swap">
+  <link rel="stylesheet" href="/static/prm.css">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="/"><b>PR</b>ediction market</a>
+    <nav class="nav" aria-label="Pages">
+      <a href="/">Andon</a>
+      <a href="/league">League</a>
+      <a href="/how" aria-current="page">How it works</a>
+    </nav>
+  </header>
+  <main class="how">
+    <section>
+      <h1>Agents are suggestions. States are laws.</h1>
+      <p class="lede">Every pull request opens a prediction market on one question: <strong>will this PR survive its post-merge
+        window without a revert or a bug fix?</strong> Four AI traders, each shown <em>different</em> evidence, buy YES or NO
+        on an LMSR market maker. The closing price becomes the <code>pr-market</code> GitHub status. The traders only emit
+        numbers; deterministic code owns trading, gating, settlement and payouts.</p>
+      <div class="gate-strip" aria-label="Gate thresholds">
+        <div class="zone red"><span class="mono">p &lt; 0.60</span><strong>blocked</strong><span>refunded, still scored</span></div>
+        <div class="zone yellow"><span class="mono">0.60 ≤ p &lt; 0.90</span><strong>escalate</strong><span>up to 2 rounds, then "no consensus" = blocked</span></div>
+        <div class="zone green"><span class="mono">p ≥ 0.90</span><strong>auto-merge OK</strong><span>settles on what happens after merge</span></div>
+      </div>
+      <p class="muted small">Default thresholds; each repo can tune them in its <code>.prm.toml</code>.</p>
+    </section>
+
+    <section class="card">
+      <h2>The state machine</h2>
+      <p class="muted small">Every transition is checked against an allow-list and appends a row to an append-only event log (the
+        timeline on each market page). Any error, or fewer than 2 responding traders, goes to VOID: fail closed, never into a merge.</p>
+      <div class="svg-scroll">
+        <svg class="sm" viewBox="0 0 1000 300" role="img" aria-labelledby="sm-title">
+          <title id="sm-title">Market states: CREATED, CONTEXT_READY, TRADING (with escalation rounds), optional HUMAN_WINDOW, CLOSED, GATED, SETTLING, SETTLED; every non-terminal state can go to VOID.</title>
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="sm-head"/>
+            </marker>
+            <marker id="arrow-void" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="sm-head-void"/>
+            </marker>
+          </defs>
+          <g class="sm-edges">
+            <line x1="128" y1="70" x2="148" y2="70" marker-end="url(#arrow)"/>
+            <line x1="268" y1="70" x2="288" y2="70" marker-end="url(#arrow)"/>
+            <line x1="408" y1="70" x2="428" y2="70" marker-end="url(#arrow)"/>
+            <line x1="548" y1="70" x2="568" y2="70" marker-end="url(#arrow)"/>
+            <line x1="688" y1="70" x2="708" y2="70" marker-end="url(#arrow)"/>
+            <line x1="828" y1="70" x2="848" y2="70" marker-end="url(#arrow)"/>
+            <path d="M380,92 L400,138" marker-end="url(#arrow)"/>
+            <path d="M440,138 L460,92" marker-end="url(#arrow)"/>
+            <path d="M325,48 C325,10 373,10 373,48" marker-end="url(#arrow)"/>
+          </g>
+          <g class="sm-void-edges">
+            <line x1="69" y1="92" x2="69" y2="228" marker-end="url(#arrow-void)"/>
+            <line x1="209" y1="92" x2="209" y2="228" marker-end="url(#arrow-void)"/>
+            <line x1="335" y1="92" x2="335" y2="228" marker-end="url(#arrow-void)"/>
+            <line x1="462" y1="182" x2="462" y2="228" marker-end="url(#arrow-void)"/>
+            <line x1="505" y1="92" x2="505" y2="228" marker-end="url(#arrow-void)"/>
+            <line x1="629" y1="92" x2="629" y2="228" marker-end="url(#arrow-void)"/>
+            <line x1="769" y1="92" x2="769" y2="228" marker-end="url(#arrow-void)"/>
+          </g>
+          <g class="sm-nodes">
+            <rect x="10" y="48" width="118" height="44" rx="8"/><text x="69" y="75">CREATED</text>
+            <rect x="150" y="48" width="118" height="44" rx="8"/><text x="209" y="75">CONTEXT_READY</text>
+            <rect x="290" y="48" width="118" height="44" rx="8" class="hot"/><text x="349" y="75">TRADING</text>
+            <rect x="430" y="48" width="118" height="44" rx="8"/><text x="489" y="75">CLOSED</text>
+            <rect x="570" y="48" width="118" height="44" rx="8"/><text x="629" y="75">GATED</text>
+            <rect x="710" y="48" width="118" height="44" rx="8"/><text x="769" y="75">SETTLING</text>
+            <rect x="850" y="48" width="140" height="44" rx="8" class="good"/><text x="920" y="75">SETTLED</text>
+            <rect x="365" y="138" width="110" height="44" rx="8" class="opt"/><text x="420" y="165">HUMAN_WINDOW</text>
+            <rect x="10" y="230" width="818" height="44" rx="8" class="bad"/><text x="419" y="257">VOID · refund every spend · gate failure</text>
+          </g>
+          <g class="sm-labels">
+            <text x="349" y="14">escalation rounds (≤ 2)</text>
+            <text x="629" y="112">auto-merge / blocked</text>
+            <text x="769" y="112">post-merge oracle</text>
+            <text x="920" y="112">payouts, exactly once</text>
+            <text x="400" y="202">judges (optional)</text>
+          </g>
+        </svg>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Data flow</h2>
+      <ol class="flow">
+        <li><strong>PR opened</strong><span>GitHub webhook, HMAC-verified; forks and drafts ignored</span></li>
+        <li><strong>Context</strong><span><code>.prm.toml</code> read from the <em>base</em> branch, so a PR can't rewrite its own rules</span></li>
+        <li><strong>4 traders</strong><span>each sees a different slice of the evidence (table below) and returns one probability</span></li>
+        <li><strong>LMSR market</strong><span>capped trades in random order; the price is the market's belief</span></li>
+        <li><strong>Gate</strong><span>closing price → <code>pr-market</code> status: success, blocked, or escalate</span></li>
+        <li><strong>Merge</strong><span>a merged PR's window starts; a rejected PR is refunded but still scored</span></li>
+        <li><strong>Settle</strong><span>a revert or bug fix to the PR's lines inside the window → NO; a quiet window → YES</span></li>
+        <li><strong>Score</strong><span>payouts to bankrolls; Brier score on the andon</span></li>
+      </ol>
+      <div class="scroll-x">
+        <table class="who-sees">
+          <thead><tr><th>trader</th><th>sees</th><th>never sees</th></tr></thead>
+          <tbody>
+            <tr><td>diff_reader</td><td>the diff</td><td>description, stats, risk signals</td></tr>
+            <tr><td>coverage</td><td>diff + test hunks + src/test line stats</td><td>description, risk signals</td></tr>
+            <tr><td>security</td><td>diff + sensitive-path hits + risk signals</td><td>description</td></tr>
+            <tr><td>skeptic</td><td>diff + PR description; argues the strongest case for failure</td><td>stats, risk signals</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="muted small">No trader sees another's number. In an escalation round they see the price and each other's
+        <em>rationales</em>, wrapped as untrusted text.</p>
+    </section>
+
+    <section class="card">
+      <h2>Invariants, and the tests that enforce them</h2>
+      <ul class="invariants">
+        <li><strong>Illegal transitions raise.</strong>
+          <a href="https://github.com/aadev151/PRediction-market/blob/main/tests/market/test_state.py"><code>tests/market/test_state.py::test_every_illegal_pair_raises</code></a></li>
+        <li><strong>Every market ends SETTLED or VOID.</strong>
+          <a href="https://github.com/aadev151/PRediction-market/blob/main/tests/market/test_state.py"><code>tests/market/test_state.py::test_random_walks_over_legal_transitions_end_in_settled_or_void</code></a></li>
+        <li><strong>No single trader can force an auto-merge</strong>: 0.50 → 0.90 costs b·ln 5 ≈ 32 credits, above the 30-credit cap.
+          <a href="https://github.com/aadev151/PRediction-market/blob/main/tests/market/test_lmsr.py"><code>tests/market/test_lmsr.py::test_no_single_trader_can_force_auto_merge</code></a>
+          <a href="https://github.com/aadev151/PRediction-market/blob/main/tests/market/test_engine.py"><code>tests/market/test_engine.py::test_no_single_trader_can_force_auto_merge</code></a></li>
+        <li><strong>Caps hold across every round.</strong>
+          <a href="https://github.com/aadev151/PRediction-market/blob/main/tests/market/test_engine.py"><code>tests/market/test_engine.py::test_caps_respected_cumulatively_over_rounds</code></a></li>
+        <li><strong>Payouts happen exactly once</strong>, even under concurrent settles.
+          <a href="https://github.com/aadev151/PRediction-market/blob/main/tests/market/test_engine.py"><code>tests/market/test_engine.py::test_payouts_happen_exactly_once</code></a>
+          <a href="https://github.com/aadev151/PRediction-market/blob/main/tests/market/test_engine.py"><code>tests/market/test_engine.py::test_concurrent_settle_pays_exactly_once</code></a></li>
+        <li><strong>Fail closed: fewer than 2 traders → VOID</strong> with gate failure.
+          <a href="https://github.com/aadev151/PRediction-market/blob/main/tests/market/test_engine.py"><code>tests/market/test_engine.py::test_fewer_than_two_responding_traders_voids_with_failure_gate</code></a></li>
+        <li><strong>Fail closed: any engine or pipeline error → VOID</strong>, never a merge.
+          <a href="https://github.com/aadev151/PRediction-market/blob/main/tests/market/test_engine.py"><code>tests/market/test_engine.py::test_unexpected_engine_error_voids_market_fail_closed</code></a>
+          <a href="https://github.com/aadev151/PRediction-market/blob/main/tests/test_pipeline.py"><code>tests/test_pipeline.py::test_exception_after_create_voids_with_public_safe_reason</code></a></li>
+        <li><strong>The middle band escalates, then blocks as "no consensus".</strong>
+          <a href="https://github.com/aadev151/PRediction-market/blob/main/tests/market/test_engine.py"><code>tests/market/test_engine.py::test_in_band_price_escalates_then_fails_no_consensus</code></a></li>
+        <li><strong>Rejected PRs are refunded, and still checked.</strong>
+          <a href="https://github.com/aadev151/PRediction-market/blob/main/tests/market/test_engine.py"><code>tests/market/test_engine.py::test_blocked_market_runs_the_unpaid_check_then_refunds_everyone</code></a></li>
+        <li><strong>Traders never see each other's numbers.</strong>
+          <a href="https://github.com/aadev151/PRediction-market/blob/main/tests/market/test_engine.py"><code>tests/market/test_engine.py::test_escalation_shows_peers_rationales_and_the_price_never_their_numbers</code></a></li>
+        <li><strong>PR text can't escape its untrusted block</strong>, and the secret canary never reaches a prompt.
+          <a href="https://github.com/aadev151/PRediction-market/blob/main/tests/traders/test_context.py"><code>tests/traders/test_context.py::test_pr_cannot_close_the_untrusted_tag</code></a>
+          <a href="https://github.com/aadev151/PRediction-market/blob/main/tests/traders/test_context.py"><code>tests/traders/test_context.py::test_canary_never_reaches_a_prompt</code></a></li>
+        <li><strong>Beliefs stay sealed until the market closes; settlement is counts only.</strong>
+          <a href="https://github.com/aadev151/PRediction-market/blob/main/tests/test_server.py"><code>tests/test_server.py::test_beliefs_revealed_after_close</code></a>
+          <a href="https://github.com/aadev151/PRediction-market/blob/main/tests/test_server.py"><code>tests/test_server.py::test_settlement_is_counts_only</code></a></li>
+        <li><strong>Every route declares its auth; webhooks must be signed.</strong>
+          <a href="https://github.com/aadev151/PRediction-market/blob/main/tests/test_server.py"><code>tests/test_server.py::test_every_route_declares_exactly_one_auth</code></a>
+          <a href="https://github.com/aadev151/PRediction-market/blob/main/tests/github/test_webhook.py"><code>tests/github/test_webhook.py::test_signature_with_other_key_or_tampered_body_fails</code></a></li>
+        <li><strong>The post-merge oracle fails closed, and git never sees a factory secret.</strong>
+          <a href="https://github.com/aadev151/PRediction-market/blob/main/tests/settle/test_postmerge.py"><code>tests/settle/test_postmerge.py::test_git_failures_fail_closed</code></a>
+          <a href="https://github.com/aadev151/PRediction-market/blob/main/tests/settle/test_git.py"><code>tests/settle/test_git.py::test_env_carries_no_factory_secrets</code></a></li>
+        <li><strong>The factory holds no target-specific code.</strong>
+          <a href="https://github.com/aadev151/PRediction-market/blob/main/tests/test_architecture.py"><code>tests/test_architecture.py::test_prm_never_imports_examples</code></a></li>
+        <li><strong>This dashboard renders untrusted text as text only.</strong>
+          <a href="https://github.com/aadev151/PRediction-market/blob/main/tests/dashboard/test_static.py"><code>tests/dashboard/test_static.py::test_js_imports_resolve_and_avoid_html_sinks</code></a></li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>Plug it into your repo in 3 steps</h2>
+      <ol class="steps">
+        <li><strong>Add <code>.prm.toml</code> to your default branch</strong> and check it with
+          <code>prm validate --target .prm.toml</code>. The parts that tune the market:
+          <pre class="code">[postmerge]
+window_days = 14      # a merged PR must go this long without a revert or fix
+
+[gate]
+auto_merge = 0.90     # merge at or above
+human_review = 0.60   # blocked below; escalate in between</pre></li>
+        <li><strong>Register the repo and point a webhook at the factory</strong>: <code>prm repo add owner/name</code>, then a GitHub
+          webhook for <em>Pull requests</em> to <code>/api/hooks/github</code> with your webhook secret.</li>
+        <li><strong>Require the <code>pr-market</code> status</strong> in branch protection. Every PR now gets a price, and the price
+          is the gate.</li>
+      </ol>
+    </section>
+  </main>
+</body>
+</html>
