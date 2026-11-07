@@ -187,6 +187,64 @@ def _demo_reset(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_league(args: argparse.Namespace) -> int:
+    """Mutants -> parallel cached beliefs + hidden-test oracle -> sequential replay -> aggregates (WP G)."""
+    from prm.db import make_session_factory
+    from prm.league.report import publish
+    from prm.league.run import default_out_dir, run_league
+
+    try:
+        from prm.league.mutate import generate_mutants  # type: ignore[attr-defined]
+    except ImportError:
+        print("league: mutant generation (prm.league.mutate) is not available yet", file=sys.stderr)
+        return 2
+    try:
+        cfg = load_server_config(args.server)
+        target_dir = Path(args.target).resolve()
+        target = load_target_config(target_dir)
+    except ConfigError as exc:
+        print(f"league: {exc}", file=sys.stderr)
+        return 1
+    lp = cfg.league
+    n = args.n if args.n is not None else lp.n
+    seed = args.seed if args.seed is not None else lp.seed
+    bug_fraction = args.bug_fraction if args.bug_fraction is not None else lp.bug_fraction
+    concurrency = args.concurrency if args.concurrency is not None else lp.concurrency
+    cfg = cfg.model_copy(update={"league": lp.model_copy(update={"n": n, "seed": seed})})
+    out = Path(args.out) if args.out else default_out_dir(target.target.name)
+    mutants = generate_mutants(
+        target_dir, out / f"mutants-seed{seed}-n{n}-bug{bug_fraction}", n=n, seed=seed,
+        bug_fraction=bug_fraction, ctx=target.context,
+    )  # fmt: skip
+    params = {"bug_fraction": bug_fraction}
+    report = asyncio.run(
+        run_league(target_dir, mutants, out_dir=out, cfg=cfg, concurrency=concurrency, params=params)
+    )
+    publish(
+        report, docs_path=Path(args.docs) if args.docs else None,
+        session_factory=make_session_factory(RuntimeEnv.from_env()), repo_label=report["params"]["repo"],
+    )  # fmt: skip
+    _print_league_headline(report)
+    return 0
+
+
+def _print_league_headline(report: dict) -> None:
+    def line(label: str, s: dict) -> str:
+        return f"  {label:<26} Brier {s['brier']} (n={s['n']})"
+
+    scores = report["scores"]["all"]
+    print(f"league: {report['n_markets']} markets, {report['n_scored']} scored, beliefs {report['beliefs']}")
+    print(line("market", scores["market"]))
+    print(line("simple average", scores["average"]))
+    best = scores["best_single"]
+    print(line(f"best single ({best.get('trader')})", best) + " [chosen in hindsight]")
+    row = next(r for r in report["gate_economics"]["thresholds"] if r["threshold"] == 0.90)
+    print(
+        f"  gate 0.90: auto {row['auto_pct']}% (n={row['n_auto']}), escaped defects "
+        f"{row['escaped_defect_rate']}%, false rejects {row['false_reject_rate']}% (n={row['n_rejected']})"
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="prm", description="PRediction Market factory")
     parser.add_argument("--version", action="version", version=f"prm {__version__}")
@@ -231,6 +289,17 @@ def build_parser() -> argparse.ArgumentParser:
     demo.add_argument("--patch", default=None, help="patch file (default: <target>/../patches/<kind>.patch)")
     demo.add_argument("--yes", action="store_true", help="confirm `demo reset`")
     demo.set_defaults(func=_cmd_demo)
+
+    league = sub.add_parser("league", help="run the league on a local target (aggregates only)")
+    league.add_argument("--target", required=True, help="local target root")
+    league.add_argument("--server", default=None, help="server config path (default: $PRM_SERVER_CONFIG)")
+    league.add_argument("--n", type=int, default=None, help="number of mutants (default: [league].n)")
+    league.add_argument("--seed", type=int, default=None)
+    league.add_argument("--bug-fraction", type=float, default=None)
+    league.add_argument("--concurrency", type=int, default=None)
+    league.add_argument("--out", default=None, help="cache dir (default: $PRM_LEAGUE_DIR/<target>)")
+    league.add_argument("--docs", default="docs/LEAGUE.md", help="markdown report path ('' to skip)")
+    league.set_defaults(func=_cmd_league)
     return parser
 
 
