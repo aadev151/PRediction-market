@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import Engine, create_engine, event, inspect, make_url, text
+from sqlalchemy import DDL, Engine, create_engine, event, inspect, make_url
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -48,13 +48,16 @@ def init_db(engine: Engine) -> None:
     """
     Base.metadata.create_all(engine)
     insp = inspect(engine)
+    quote = engine.dialect.identifier_preparer.quote
     with engine.begin() as conn:
         for table in Base.metadata.sorted_tables:
             have = {c["name"] for c in insp.get_columns(table.name)}
             for col in table.columns:
                 if col.name not in have and col.nullable and not col.primary_key:
-                    ddl = f"ALTER TABLE {table.name} ADD COLUMN {col.name} {col.type.compile(engine.dialect)}"
-                    conn.execute(text(ddl))  # noqa: S608 - names come from our own metadata
+                    # Identifiers come from our own metadata (never user input) and are quoted anyway.
+                    col_type = col.type.compile(engine.dialect)
+                    ddl = f"ALTER TABLE {quote(table.name)} ADD COLUMN {quote(col.name)} {col_type}"
+                    conn.execute(DDL(ddl))
 
 
 def make_session_factory(source: str | RuntimeEnv | Engine) -> sessionmaker[Session]:
