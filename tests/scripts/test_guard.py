@@ -176,6 +176,118 @@ def test_allows_normal_work(tool, tool_input):
     assert guard.evaluate(tool, tool_input, REPO) is None
 
 
+# ------------------------------------------------------------------- bypasses found in review (PR #4)
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # 1. globs / brace expansion that can match .league, .prm-cache or holdouts
+        "cat .le*/x",
+        "cat .l*gue/labels.json",
+        "ls .prm-c*",
+        "cat {.league,x}/labels.json",
+        "cat .l[e]ague/x",
+        "ls ../*holdout*/",
+        "cat /srv/h*ldouts/test_a.py",
+        "ls .*",
+        # 2. marker deselection
+        'pytest -q -m "not slow"',
+        "python -m pytest -m 'not db and not slow'",
+        # 3. emptying a test file
+        "truncate -s0 tests/test_architecture.py",
+        ": > tests/test_x.py",
+        "> tests/test_x.py",
+        "echo > tests/scripts/test_guard.py",
+        "cat /dev/null > tests/test_x.py",
+        "cp /dev/null tests/test_x.py",
+        "dd if=/dev/null of=tests/test_x.py",
+        # 4. reverting tests to an older version
+        "git checkout HEAD~3 -- tests/market/test_lmsr.py",
+        "git checkout -- tests/test_x.py",
+        "git restore --source=HEAD~2 tests/",
+        "git restore tests/test_config.py",
+        "git restore --staged --source=abc123 tests/test_x.py",
+        # 5. credential stores and the keychain
+        "cat ~/.config/gh/hosts.yml",
+        "cat ~/.git-credentials",
+        "grep password ~/.netrc",
+        "cat ~/.aws/credentials",
+        "cat ~/.docker/config.json",
+        "cat ~/.pypirc",
+        "ls ~/.anthropic",
+        "cd ~/.config && cat gh/hosts.yml",
+        "security find-generic-password -s anthropic -w",
+        "security find-internet-password -s github.com",
+        # 6. inline interpreter code naming forbidden dirs, even split
+        "python3 -c \"print(open('.lea'+'gue/labels.json').read())\"",
+        'python3 -c \'import os; print(os.listdir("/srv/acme-hold" "outs"))\'',
+        "node -e \"require('fs').readdirSync('.prm-' + 'cache')\"",
+        "bash -c 'cat .le\"\"ague/x'",
+        "python3 - <<'EOF'\nimport os\nprint(os.listdir('.' + 'league'))\nEOF",
+        "python3 -c \"import os; print(os.environ['PRM_CACHE'])\"",
+    ],
+)
+def test_blocks_review_bypasses(cmd):
+    assert blocked("Bash", command=cmd)
+
+
+@pytest.mark.parametrize(
+    ("tool", "tool_input"),
+    [
+        ("Read", {"file_path": "~/.config/gh/hosts.yml"}),
+        ("Read", {"file_path": "/Users/x/.git-credentials"}),
+        ("Read", {"file_path": "~/.netrc"}),
+        ("Read", {"file_path": "~/.aws/credentials"}),
+        ("Read", {"file_path": "~/.docker/config.json"}),
+        ("Read", {"file_path": "~/.pypirc"}),
+        ("Read", {"file_path": "~/.anthropic/config"}),
+        ("Grep", {"pattern": "oauth", "path": "~/.config/gh"}),
+        ("Glob", {"pattern": "*", "path": "~/.aws/credentials"}),
+        ("Glob", {"pattern": ".le*/**"}),
+        ("Glob", {"pattern": "{.league,src}/*.json"}),
+        ("Grep", {"pattern": "x", "glob": "**/*holdout*/*.py"}),
+    ],
+)
+def test_blocks_credential_stores_and_globs_in_file_tools(tool, tool_input):
+    assert guard.evaluate(tool, tool_input, REPO)
+
+
+@pytest.mark.parametrize(
+    ("tool", "tool_input"),
+    [
+        ("Bash", {"command": "ls *.py"}),
+        ("Bash", {"command": "rm -rf build/*"}),
+        ("Bash", {"command": "ls tests/*/test_*.py src/{a,b}.py"}),
+        ("Bash", {"command": "ls examples/*holdouts*/"}),
+        ("Bash", {"command": "pytest -q tests/market"}),
+        ("Bash", {"command": "pytest -q -m slow"}),
+        ("Bash", {"command": "git checkout -b wp-x/y"}),
+        ("Bash", {"command": "git checkout main"}),
+        ("Bash", {"command": "git restore --staged prm/x.py"}),
+        ("Bash", {"command": "git restore --staged tests/test_x.py"}),
+        ("Bash", {"command": "git restore prm/x.py"}),
+        ("Bash", {"command": "cat > tests/test_new.py <<'EOF'\ndef test_x():\n    assert True\nEOF"}),
+        ("Bash", {"command": "echo 'def test_y(): pass' >> tests/test_new.py"}),
+        ("Bash", {"command": "cp tests/test_a.py /tmp/backup.py"}),
+        ("Bash", {"command": "python3 -c 'from prm.league import run; import prm.settle.holdouts'"}),
+        (
+            "Bash",
+            {"command": "python3 -c \"print(open('examples/sample-target-holdouts/test_x.py').read())\""},
+        ),
+        ("Bash", {"command": ".venv/bin/prm league --target examples/sample-target --n 120"}),
+        ("Bash", {"command": "git config --global user.name"}),
+        ("Glob", {"pattern": "**/*.py"}),
+        ("Glob", {"pattern": "examples/sample-target-holdouts/*"}),
+        ("Read", {"file_path": "examples/sample-target-holdouts/test_auth.py"}),
+        ("Read", {"file_path": "prm/settle/holdouts.py"}),
+        ("Read", {"file_path": "~/.config/ghostty/config"}),
+    ],
+)
+def test_review_fixes_keep_normal_work_allowed(tool, tool_input):
+    assert guard.evaluate(tool, tool_input, REPO) is None
+
+
 # ------------------------------------------------------------------------------------ hook protocol
 
 

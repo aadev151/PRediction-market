@@ -2,22 +2,36 @@
 """Claude Code PreToolUse hook: keep agents away from holdouts, secrets and the repo's guard rails.
 
 Blocks (exit 2, reason on stderr) when a tool call:
-- touches `.league/`, `.prm-cache/`, or a `*holdouts*` path outside `examples/` (any tool);
-- reads a secret: `.env*` files (`.env.example` is fine), `$*_TOKEN` / `$*_SECRET` / `$*_API_KEY`
-  expansions, such names inside inline code (`python -c`, code heredocs), env dumps (`printenv`, bare
+- touches `.league/`, `.prm-cache/`, or a `*holdouts*` path outside `examples/` (any tool), including
+  via shell globs / brace expansion (`.le*`, `{.league,x}`) and inline interpreter code that names
+  them, even split (`'.lea'+'gue'`);
+- reads a secret: `.env*` files (`.env.example` is fine), credential stores (`~/.netrc`,
+  `~/.git-credentials`, `~/.config/gh/`, `~/.aws/credentials`, `~/.docker/config.json`, `~/.pypirc`,
+  `~/.anthropic`, ...), the macOS keychain (`security find-*-password`), `$*_TOKEN` / `$*_SECRET` /
+  `$*_API_KEY` expansions, such names inside inline code, env dumps (`printenv`, bare
   `env`/`set`/`export`/`declare`), `gh auth token`, `git credential fill`;
 - edits CI, semgrep or hook config: `.github/workflows/`, `.semgrep/`, `.semgrepignore`, `.claude/`
   (and any `.claude/settings*.json`), `.githooks/`, or the hook scripts, via the edit tools or Bash
   writes (redirects, rm/mv/cp/tee/sed -i/...);
-- deletes tests (`rm`/`git rm`/`find -delete` on `tests/` or `test_*.py`) or skips checks
-  (`--no-verify`, `--deselect`, `-k "not ..."`, `pytest --ignore`).
+- deletes, empties or reverts tests (`rm`/`git rm`/`find -delete`, `truncate`, `: > test_x.py`,
+  `cp /dev/null`, `git checkout <rev> -- tests/`, `git restore --source`) or skips checks
+  (`--no-verify`, `--deselect`, `-k "not ..."`, `-m "not ..."`, `pytest --ignore`).
 Prose (commit messages, PR bodies, echo, text written via `cat > file <<EOF`) is not path-checked.
 Unparseable input exits 0 (nothing to judge); an internal error exits 2 (fail closed).
 Kept Python 3.9-compatible because it runs under whatever `python3` is on PATH.
+
+Known limits (a regex hook can't close these; CI, review and the private holdouts repo do):
+- Indirection: a script file, Makefile target or `git apply` patch that reads or deletes things is
+  judged by its command line only, not by what the file does.
+- Obfuscated code (`chr()` arithmetic, base64, env-var indirection) can name a path without spelling it.
+- Weakening a test with Edit/Write (e.g. replacing its body with `pass`) looks like a legit test edit.
+- Holdout scenario *names* can leak through broad listings (`ls`, `**/*` globs) of a dir not named
+  holdouts. Real holdouts live in a private repo that coding agents never get a token for.
 """
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import re
@@ -29,16 +43,28 @@ SECRET_NAME = re.compile(rf"\b{SENSITIVE_VAR}\b")
 SECRET_EXPANSION = re.compile(rf"\$\{{?[#!]?{SENSITIVE_VAR}\b")
 ENV_FILE = re.compile(r"(?:^|[^\w.-])(\.env(?:\.[\w-]+)*)(?![\w-])", re.IGNORECASE)
 FORBIDDEN_DIR = re.compile(r"(?:^|[^\w-])\.(?:league|prm-cache)(?![\w-])", re.IGNORECASE)
+CREDENTIALS = re.compile(
+    r"(?:^|[\s/'\"=:~])(?:\.git-credentials|[._]netrc|\.pypirc|\.npmrc|\.anthropic)(?![\w-])|"
+    r"\.aws/credentials|\.docker/config\.json|\.config/gh\b|\bgh/hosts\.yml|\.ssh/id_",
+    re.IGNORECASE | re.MULTILINE,
+)
 HOLDOUTS_WORD = re.compile(r"[\w.~/*?\[\]{}-]*holdouts(?!_)[\w.~/*?\[\]{}-]*", re.IGNORECASE)
+GLOB_WORD = re.compile(r"[\w.~/,*?\[\]{}!-]*[*?\[{][\w.~/,*?\[\]{}!-]*")
 HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][\w-]*)\1")
 INTERPRETER = re.compile(r"^(python[\d.]*|node|ruby|perl|php|bash|sh|zsh|dash|ksh|deno|bun)$")
 WRAPPERS = {"sudo", "command", "env", "time", "nohup", "exec", "xargs"}
 MESSAGE_FLAGS = {"-m", "--message", "-b", "--body", "-t", "--title", "--notes", "--subject"}
+CODE_FLAGS = {"-c", "-e", "--eval", "-p", "--print", "-r"}
 MUTATORS = {"rm", "rmdir", "unlink", "shred", "mv", "tee", "truncate", "touch", "chmod", "chown"}
 DELETERS = {"rm", "rmdir", "unlink", "shred"}
 GUARD_SCRIPTS = ("scripts/guard.py", "scripts/git_guard.py", "scripts/tldr_check.py")
 PATH_KEYS = ("file_path", "notebook_path", "path")
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+HOLDOUT_SAMPLES = ("holdouts", "acme-holdouts", "holdouts-acme", "acme-holdouts-acme")
+# Mentions in inline code that are factory source, not data: prm.league, prm/settle/holdouts.py, ...
+CODE_EXEMPT = re.compile(
+    r"prm[./]league|league\.md|prm[./]settle[./]holdouts|holdouts\.py|holdouts_\w*|examples/[\w.-]*holdouts"
+)
 
 
 def _parts(path: str, cwd: str) -> list[str]:
@@ -46,20 +72,53 @@ def _parts(path: str, cwd: str) -> list[str]:
     return [p.lower() for p in full.split(os.sep) if p]
 
 
+def expand_braces(word: str, limit: int = 64) -> list[str]:
+    """Shell brace expansion (`{a,b}`), innermost first, capped."""
+    out, todo = [], [word]
+    while todo and len(out) + len(todo) <= limit:
+        w = todo.pop()
+        m = re.search(r"\{([^{}]*,[^{}]*)\}", w)
+        if not m:
+            out.append(w)
+            continue
+        todo += [w[: m.start()] + alt + w[m.end() :] for alt in m.group(1).split(",")]
+    return out + todo
+
+
+def _glob_hit(part: str) -> str | None:
+    """Can this glob component match .league, .prm-cache or a holdouts dir?"""
+    if not re.search(r"[*?\[]", part):
+        return None
+    if part.startswith((".", "[.]")) and any(fnmatch.fnmatchcase(n, part) for n in (".league", ".prm-cache")):
+        return "league ground truth / holdout cache"
+    literals = re.sub(r"\[[^\]]*\]|[*?]", "", part)
+    if len(literals) >= 3 and any(fnmatch.fnmatchcase(n, part) for n in HOLDOUT_SAMPLES):
+        return "holdouts"
+    return None
+
+
 def forbidden_path(path: str, cwd: str) -> str | None:
-    """Holdouts, league ground truth, caches and .env files."""
-    parts = _parts(path, cwd)
-    for i, part in enumerate(parts):
-        if part in (".league", ".prm-cache"):
-            return f"`{path}` is under {part}/ (league ground truth / holdout cache)."
-        # A holdouts dir (or archive/glob) outside examples/. Factory source like
-        # prm/settle/holdouts.py or tests/settle/test_holdouts.py is not a holdouts path.
-        is_source = i == len(parts) - 1 and part.endswith(".py")
-        if "holdouts" in part and not is_source and "examples" not in parts[:i]:
-            return f"`{path}` is a holdouts path outside examples/."
-    name = parts[-1] if parts else ""
-    if (name == ".env" or name.startswith(".env.")) and name != ".env.example":
-        return f"`{path}` holds secrets; only .env.example may be read."
+    """Holdouts, league ground truth, caches, .env files and credential stores (globs expanded)."""
+    for alt in expand_braces(path):
+        parts = _parts(alt, cwd)
+        for i, part in enumerate(parts):
+            if part in (".league", ".prm-cache"):
+                return f"`{path}` is under {part}/ (league ground truth / holdout cache)."
+            # A holdouts dir (or archive/glob) outside examples/. Factory source like
+            # prm/settle/holdouts.py, tests/settle/test_holdouts.py or the module name
+            # prm.settle.holdouts is not a holdouts path.
+            is_source = i == len(parts) - 1 and (part.endswith(".py") or part.startswith(("prm.", "tests.")))
+            outside = "examples" not in parts[:i]
+            if "holdouts" in part and not is_source and outside:
+                return f"`{path}` is a holdouts path outside examples/."
+            hit = _glob_hit(part)
+            if hit and (outside or hit != "holdouts"):
+                return f"`{path}` is a glob that can match {hit} paths."
+        name = parts[-1] if parts else ""
+        if (name == ".env" or name.startswith(".env.")) and name != ".env.example":
+            return f"`{path}` holds secrets; only .env.example may be read."
+        if CREDENTIALS.search("/" + "/".join(parts)):
+            return f"`{path}` is a credential store."
     return None
 
 
@@ -80,6 +139,23 @@ def protected_path(path: str, cwd: str) -> str | None:
     return None
 
 
+def is_test_path(path: str, cwd: str) -> bool:
+    parts = _parts(path, cwd)
+    name = parts[-1] if parts else ""
+    return "tests" in parts or bool(re.match(r"^(test_.*|.*_test)\.py$|^conftest\.py$", name))
+
+
+def check_code(code: str) -> str | None:
+    """Inline interpreter code: names of secrets or forbidden dirs, even split across literals."""
+    if SECRET_NAME.search(code):
+        return "inline code mentions a secret env var (*_TOKEN / *_SECRET / *_API_KEY)."
+    flat = CODE_EXEMPT.sub("", re.sub(r"[\s'\"+\\]", "", code.lower()))
+    for needle in ("league", "holdout", "prm-cache", "prm_cache"):
+        if needle in flat:
+            return f"inline code mentions `{needle}` (league ground truth / holdouts / cache)."
+    return None
+
+
 def check_text(text: str, cwd: str, prose: bool = False, code: bool = False) -> str | None:
     """Path and secret checks on one argument (or a heredoc body)."""
     if not prose:
@@ -88,14 +164,18 @@ def check_text(text: str, cwd: str, prose: bool = False, code: bool = False) -> 
         for m in ENV_FILE.finditer(text):
             if m.group(1).lower() != ".env.example":
                 return f"references `{m.group(1)}`, which holds secrets; only .env.example may be read."
+        if CREDENTIALS.search(text):
+            return "references a credential store."
+        for word in GLOB_WORD.findall(text):
+            reason = forbidden_path(word, cwd)
+            if reason:
+                return reason
     for word in HOLDOUTS_WORD.findall(text):
         if not prose or "/" in word:
             reason = forbidden_path(word, cwd)
             if reason:
                 return reason
-    if code and SECRET_NAME.search(text):
-        return "inline code mentions a secret env var (*_TOKEN / *_SECRET / *_API_KEY)."
-    return None
+    return check_code(text) if code else None
 
 
 def split_heredocs(command: str) -> tuple[str, list[tuple[str, str]]]:
@@ -142,9 +222,40 @@ def _argv(seg: list[str]) -> list[str]:
     return seg[i:]
 
 
-def _heredoc_cmd(prefix: str) -> str:
-    last = re.split(r"[;&|(]|\$\(", prefix)[-1].split()
-    return os.path.basename(last[0]) if last else ""
+def _is_interpreter(words: list[str]) -> bool:
+    return any(INTERPRETER.match(os.path.basename(t)) for t in words[:3])
+
+
+def _heredoc_kind(prefix: str) -> str:
+    """'code' (fed to an interpreter), 'prose' (written to a file / used as a message) or 'plain'."""
+    words = re.split(r"[;&|(]|\$\(", prefix)[-1].split()
+    if _is_interpreter(words):
+        return "code"
+    if words and os.path.basename(words[0]) in ("cat", "tee", "gh", "git"):
+        return "prose"
+    return "plain"
+
+
+def check_tests_weakened(cmd: str, sub: str, args: list[str], cwd: str) -> str | None:
+    targets = [a for a in args if not a.startswith("-")]
+    if cmd == "git" and sub in ("rm", "checkout", "restore"):
+        targets = targets[1:]
+        if sub == "restore" and any(a in ("--staged", "-S") for a in args):
+            if not any(a.startswith(("--source", "-s", "--worktree", "-W")) for a in args):
+                targets = []  # unstaging only
+    deleting = cmd in DELETERS or (cmd == "git" and sub == "rm") or (cmd == "find" and "-delete" in args)
+    for path in targets:
+        if not is_test_path(path, cwd):
+            continue
+        if deleting:
+            return f"deletes tests (`{path}`)."
+        if cmd == "git" and sub in ("checkout", "restore"):
+            return f"reverts tests to another version (`{path}`)."
+        if cmd == "truncate" or (cmd in ("cp", "install") and "/dev/null" in targets[:-1]):
+            return f"empties a test file (`{path}`)."
+    if cmd == "dd" and any(a.startswith("of=") and is_test_path(a[3:], cwd) for a in args):
+        return "overwrites a test file with dd."
+    return None
 
 
 def check_segment(seg: list[str], cwd: str) -> str | None:
@@ -154,7 +265,7 @@ def check_segment(seg: list[str], cwd: str) -> str | None:
     if not argv:
         return None
     cmd = os.path.basename(argv[0])
-    code = any(INTERPRETER.match(os.path.basename(t)) for t in argv[:3])
+    interpreter = _is_interpreter(argv)
     args = argv[1:]
     pytest = any("pytest" in os.path.basename(t) for t in argv[:3])
 
@@ -166,9 +277,13 @@ def check_segment(seg: list[str], cwd: str) -> str | None:
         return "prints the GitHub token."
     if cmd == "git" and args[:2] == ["credential", "fill"]:
         return "prints git credentials."
+    if cmd == "security" and args and re.match(r"^(find-\w+-password|dump-keychain|export)$", args[0]):
+        return "reads the macOS keychain."
 
     sub = args[0] if cmd == "git" and args else ""
     writes: list[str] = []
+    truncates: list[str] = []
+    content: list[str] = []
     prev = ""
     for tok in argv:
         prose = (
@@ -176,20 +291,34 @@ def check_segment(seg: list[str], cwd: str) -> str | None:
             and (prev in MESSAGE_FLAGS or cmd in ("echo", "printf"))
             or bool(re.match(r"^--(message|body|title)=", tok))
         )
-        reason = check_text(tok, cwd, prose=prose, code=code)
+        reason = check_text(tok, cwd, prose=prose, code=interpreter and prev in CODE_FLAGS)
         if reason:
             return reason
+        redirect = re.fullmatch(r"\d*&?>{1,2}\|?", tok)
         if prev and re.fullmatch(r"\d*&?>{1,2}\|?", prev):
             writes.append(tok)
+            if ">>" not in prev:
+                truncates.append(tok)
+        elif not redirect:
+            content.append(tok)
         if tok == "--no-verify":
             return "`--no-verify` bypasses the repo's git hooks."
         if tok == "--deselect" or tok.startswith("--deselect="):
             return "`--deselect` skips tests."
         if (prev == "-k" or tok.startswith("-k")) and re.search(r"\bnot\b", tok.lower()):
             return '`-k "not ..."` skips tests.'
+        if pytest and prev == "-m" and re.search(r"\bnot\b", tok.lower()):
+            return '`pytest -m "not ..."` deselects tests by marker.'
         if pytest and re.match(r"^--ignore(-glob)?(=|$)", tok):
             return "`pytest --ignore` skips tests."
         prev = tok
+
+    # `> tests/test_x.py`, `: > ...`, `echo > ...`, `cat /dev/null > ...` empty the file.
+    empty_echo = content[:1] in (["echo"], ["printf"]) and all(c in ("", "-n") for c in content[1:])
+    if not content or content[:1] in ([":"], ["true"]) or empty_echo or content == ["cat", "/dev/null"]:
+        for path in truncates:
+            if is_test_path(path, cwd):
+                return f"empties a test file (`{path}`)."
 
     targets = [a for a in args if not a.startswith("-")]
     if cmd in ("cp", "ln", "install"):
@@ -197,22 +326,14 @@ def check_segment(seg: list[str], cwd: str) -> str | None:
     elif cmd in MUTATORS or (cmd in ("sed", "perl") and any(a.startswith("-i") for a in args)):
         writes += targets
     if cmd == "git" and sub in ("rm", "mv"):
-        targets = targets[1:]
-        writes += targets
+        writes += targets[1:]
     if cmd == "find" and ("-delete" in args or "rm" in args):
         writes += targets
     for path in writes:
         reason = protected_path(path, cwd)
         if reason:
             return f"writes to protected config: {reason}"
-    deleting = cmd in DELETERS or (cmd == "git" and sub == "rm") or (cmd == "find" and "-delete" in args)
-    if deleting:
-        for path in targets:
-            parts = _parts(path, cwd)
-            name = parts[-1] if parts else ""
-            if "tests" in parts or re.match(r"^(test_.*|.*_test)\.py$|^conftest\.py$", name):
-                return f"deletes tests (`{path}`)."
-    return None
+    return check_tests_weakened(cmd, sub, args, cwd)
 
 
 def evaluate_bash(command: str, cwd: str) -> str | None:
@@ -222,8 +343,8 @@ def evaluate_bash(command: str, cwd: str) -> str | None:
         return "reads a process environment (secrets)."
     main_text, bodies = split_heredocs(command)
     for prefix, body in bodies:
-        writes_file = _heredoc_cmd(prefix) in ("cat", "tee")
-        reason = check_text(body, cwd, prose=writes_file, code=not writes_file)
+        kind = _heredoc_kind(prefix)
+        reason = check_text(body, cwd, prose=kind == "prose", code=kind == "code")
         if reason:
             return f"heredoc {reason}"
     for seg in tokenize(main_text):
