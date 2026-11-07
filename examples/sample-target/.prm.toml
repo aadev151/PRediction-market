@@ -1,0 +1,20 @@
+# FIXTURE: the sample target's PRediction Market contract (PLAN §3.1). In a real target this file lives at the
+# repo root on the default branch and is always read from the PR's BASE sha.
+
+[target]
+name = "sample-target"
+# Local fixture holdouts, relative to this directory. A real target uses holdouts_repo = "owner/private-holdouts".
+holdouts_path = "../sample-target-holdouts"
+spec = "docs/SPEC.md"
+
+[settle]
+driver = "local"
+setup = ""
+command = "python -m pytest {holdouts} -q -p no:cacheprovider --junitxml={junit}"
+timeout_s = 180
+env = { PYTHONPATH = "{head}" }
+
+[context]
+test_globs = ["tests/**", "**/test_*.py", "**/*_test.py"]
+sensitive_globs = ["**/auth*", "**/security*", "**/permissions*", "**/middleware*", ".github/**", "**/*.env*"]
+source_globs = ["**/*.py"]
