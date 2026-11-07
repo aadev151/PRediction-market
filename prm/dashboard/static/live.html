@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PRediction Market · Live</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600;700;800&display=swap">
+  <link rel="stylesheet" href="/static/prm.css">
+  <script type="module" src="/static/live.js"></script>
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="/"><b>PR</b>ediction market</a>
+    <nav class="nav" aria-label="Pages">
+      <a href="/">Andon</a>
+      <a href="/league">League</a>
+      <a href="/how">How it works</a>
+      <a href="/live" aria-current="page">Judges vs. Agents</a>
+    </nav>
+    <span id="live" class="live" role="status">connecting…</span>
+  </header>
+  <main class="live-page">
+    <div class="live-grid">
+      <section class="card qr-card" aria-labelledby="qr-h">
+        <h2 id="qr-h">Bet against our agents</h2>
+        <img id="qr" src="/api/qr.svg?path=/judge" alt="QR code linking to the judge page" width="320" height="320">
+        <p class="mono qr-url" id="qr-url"></p>
+        <p class="muted">100 credits each · same caps as the agents · the hidden tests settle it</p>
+      </section>
+
+      <section class="card" id="now" aria-live="polite" aria-labelledby="now-h">
+        <h2 id="now-h">Judge market</h2>
+        <div id="now-body"></div>
+        <div class="controls">
+          <button type="button" id="open-btn" class="primary">Open judge market</button>
+          <button type="button" id="settle-btn">Close &amp; settle</button>
+        </div>
+        <p id="admin-msg" class="msg" role="alert"></p>
+        <details id="admin" class="admin">
+          <summary>presenter token</summary>
+          <form id="token-form" class="join-form">
+            <label for="token">Admin token (kept in this tab only)</label>
+            <input id="token" type="password" autocomplete="off">
+            <button type="submit">Save</button>
+          </form>
+        </details>
+      </section>
+    </div>
+
+    <section class="card" aria-labelledby="feed-h">
+      <h2 id="feed-h">Trades</h2>
+      <div id="feed" class="scroll-x"></div>
+    </section>
+
+    <section aria-labelledby="board-h">
+      <h2 id="board-h">Judges vs. Agents</h2>
+      <div class="two-col" id="board"></div>
+    </section>
+  </main>
+</body>
+</html>

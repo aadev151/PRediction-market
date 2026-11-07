@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PRediction Market · Judge</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600;700;800&display=swap">
+  <link rel="stylesheet" href="/static/prm.css">
+  <script type="module" src="/static/judge.js"></script>
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="/"><b>PR</b>ediction market</a>
+    <span id="live" class="live" role="status">connecting…</span>
+  </header>
+  <main class="judge">
+    <section class="card" id="join" hidden aria-labelledby="join-h">
+      <h1 id="join-h">Bet against our agents</h1>
+      <p class="muted">Four AI traders just priced a pull request: will it hold up after merge, with no revert and no bug fix? Get 100 credits and
+        trade against them. The hidden tests decide who was right.</p>
+      <form id="join-form" class="join-form">
+        <label for="name">Your name</label>
+        <input id="name" name="name" autocomplete="nickname" maxlength="32" required placeholder="e.g. Ada">
+        <button type="submit" class="primary">Join with 100 credits</button>
+      </form>
+      <p id="join-msg" class="msg" role="alert"></p>
+    </section>
+
+    <section class="card me" id="me" hidden aria-label="Your account"></section>
+
+    <section id="market" aria-live="polite"></section>
+
+    <section class="card" id="bet" hidden aria-labelledby="bet-h">
+      <h2 id="bet-h">Your bet</h2>
+      <div class="side-pick" role="group" aria-label="Side">
+        <button type="button" class="side yes" data-side="YES" aria-pressed="false">YES<small>it holds up</small></button>
+        <button type="button" class="side no" data-side="NO" aria-pressed="false">NO<small>it breaks</small></button>
+      </div>
+      <label for="spend" class="spend-label">Spend <span id="spend-out" class="num">0</span> credits
+        <span class="muted small" id="cap-note"></span></label>
+      <input id="spend" type="range" min="1" max="25" step="1" value="5">
+      <button type="button" id="place" class="primary" disabled>Pick a side</button>
+      <p id="bet-msg" class="msg" role="alert"></p>
+    </section>
+
+    <section class="card" id="position" hidden aria-label="Your position"></section>
+
+    <section class="card diff" id="diff-card" hidden aria-labelledby="diff-h">
+      <h2 id="diff-h">The pull request</h2>
+      <p class="prose" id="description"></p>
+      <pre id="diff"></pre>
+    </section>
+  </main>
+</body>
+</html>
