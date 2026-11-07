@@ -406,6 +406,23 @@ yellow `#f0e43a`, green `#29d07a`. Render untrusted text (diffs, rationales, PR 
 `prm league --target PATH --n 120` · `prm demo bug|good [--local] --target PATH --repo owner/name` (local: run a full market + settlement on `examples/patches/*.patch`
 with no GitHub, written to the DB so the dashboard shows it; non-local: branch, apply the patch, push, `gh pr create`) · `prm demo reset` · `prm smoke-llm`.
 
+### 6.16 Optional add-on (P2, only if ahead): trader retirement and respawn
+**Off by default. Build it only after J is done and before the 4:15 freeze. If there's no time, it's a roadmap line in the pitch.**
+
+Idea: bankrolls already shrink a bad trader's influence. This closes the loop. When a trader goes nearly broke, the engine retires it and spawns a
+replacement **in the same role** (same evidence slice, so the information diversity stays) with a **different prompt variant**. It's natural selection over prompts, with the market as the fitness function.
+- **Config** (`prm.server.toml`): `[evolution] enabled = false`, `retire_below = 20.0`, `max_generations = 3`.
+- **Variants:** written by humans or coding agents ahead of time, in `prm/traders/prompts/variants/<role>/*.md` (e.g. `security/strict.md`, `security/checklist.md`). An LLM never writes
+  prompts at runtime (agents only emit numbers). The engine picks the next unused variant for that role deterministically with `rng`. A model swap (e.g. Haiku → Sonnet) is allowed as a variant.
+- **Data model:** `traders` gets `status 'active'|'retired'`, `generation int`, `prompt_variant`, and `parent_id` (nullable fk). The new trader's name is `<role>.g<N>` (keeps the unique (repo_id, name)).
+- **Engine:** after `settle()` applies payouts, for each active agent trader in that repo with `bankroll < retire_below` and `generation < max_generations`: mark it retired, create its successor
+  with `start_bankroll`, and append an `events` row (actor `engine`, detail like `retired security (bankroll 14.2) → spawned security.g2 (variant: strict)`). Retired traders are excluded from future rosters.
+- **League:** the belief cache key includes the variant (it already does, via the trader name). On a cache miss during the sequential replay, compute the belief lazily and cache it.
+- **Dashboard:** a "retired" badge and lineage (`security → security.g2`) on the leaderboard and league bankroll chart. The retire event shows on the market page timeline.
+- **Tests:** with `enabled=false` nothing changes; retirement fires exactly once per trader; a retired trader never trades; the successor gets the same context slices as its role; the
+  no-solo-auto-merge invariant still holds; `max_generations` is respected.
+- **Pitch line:** "Bankrolls reweight traders automatically. When one goes broke, the factory retires it and spawns a new prompt variant in the same role. The market decides which prompts survive."
+
 ---
 
 ## 7. Sample target (`examples/sample-target/`): a FIXTURE for dev, tests, CI and the first league
@@ -496,8 +513,9 @@ PRM_SANDBOX=subprocess
 | **H: Harness/CI/deploy/docs** | full `ci.yml`, semgrep rules, guard hook, Dockerfile, deploy, README, INTEGRATING, DECISIONS | Phase 0 | 60 min, spread out | CI green; the hook blocks a read of `.league/`; the service is reachable at a public URL |
 | **J: Judge betting** (P1) | `/judge`, `/live`, demo endpoints, leaderboard | A, E, G | 45 min | a phone can join, bet, and see P&L after close & settle |
 | **K: Real target** (after the 1:30 decision) | its `.prm.toml`, a private holdouts repo (**separate isolated session, spec only**), demo patches, webhook | E, decision | 40 min | `prm demo bug` on the real repo → a red `pr-market` on GitHub |
+| **L: Retire & respawn** (P2, optional) | §6.16: `[evolution]` config, trader lineage columns, prompt variants, engine hook, league lazy beliefs, badges | A, B, G, J | 45 min | §6.16 tests green; a league run with `enabled=true` shows at least one retire → spawn event |
 
-Merge order: Phase 0 → A, B, C, H in parallel → D → E (+F in parallel) → **live with a webhook by 2:45** → G → K → J → polish.
+Merge order: Phase 0 → A, B, C, H in parallel → D → E (+F in parallel) → **live with a webhook by 2:45** → G → K → J → (L only if ahead) → polish.
 
 ---
 
