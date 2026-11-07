@@ -1,8 +1,11 @@
 """WP B. Map ServerConfig.traders to belief providers (llm / fake / replay). PLAN §6.4.
 
-``gather_beliefs`` is what the engine calls: it builds the four contexts once, asks every trader in
-parallel, and always returns one ``BeliefResult`` per trader. Any failure becomes an abstention, so the
-engine's "fewer than ``min_traders`` responded → VOID" rule is the only place a market can be stopped.
+The engine (WP A) talks to traders through ``prm.market.engine.BeliefProvider``:
+``async get_belief(spec, bundle)`` (DECISIONS #34). ``EngineProvider`` adapts any WP B provider to that seam:
+it builds the trader's context and delegates. ``make_engine_provider(cfg)`` is what the pipeline, CLI and
+league pass to ``MarketEngine``. Every failure becomes an abstention carrying only the exception *type*
+(an exception message could carry request data), so the engine's "fewer than ``min_traders`` responded ->
+VOID" rule is the only place a market can be stopped.
 """
 
 from __future__ import annotations
@@ -12,7 +15,7 @@ from collections.abc import Sequence
 
 from prm.config import RuntimeEnv, ServerConfig, TraderSpec
 from prm.traders.base import BeliefProvider, abstain
-from prm.traders.context import build_contexts
+from prm.traders.context import Evidence, build_context, gather_evidence
 from prm.traders.fake import FakeProvider
 from prm.traders.llm import LLMProvider
 from prm.traders.replay import ReplayProvider
@@ -29,25 +32,47 @@ def make_provider(cfg: ServerConfig, env: RuntimeEnv | None = None) -> BeliefPro
     return LLMProvider(cfg)
 
 
+class EngineProvider:
+    """Satisfies ``prm.market.engine.BeliefProvider``. Never raises: every failure abstains."""
+
+    def __init__(self, provider: BeliefProvider) -> None:
+        self.provider = provider
+        self._cached: tuple[PRBundle, Evidence] | None = None
+
+    def _evidence(self, bundle: PRBundle) -> Evidence:
+        # The engine asks every trader about the same bundle object at once: parse the diff once.
+        if self._cached is None or self._cached[0] is not bundle:
+            self._cached = (bundle, gather_evidence(bundle))
+        return self._cached[1]
+
+    async def get_belief(self, spec: TraderSpec, bundle: PRBundle) -> BeliefResult:
+        try:
+            ctx = build_context(spec.name, bundle, self._evidence(bundle))
+        except Exception as exc:  # fail closed: this trader abstains
+            return abstain(spec.name, spec.model, f"context error: {type(exc).__name__}")
+        try:
+            result = await self.provider.belief(spec, ctx, bundle)
+        except Exception as exc:  # a trader never raises
+            return abstain(spec.name, spec.model, f"provider error: {type(exc).__name__}")
+        if not isinstance(result, BeliefResult):
+            return abstain(spec.name, spec.model, f"provider returned {type(result).__name__}")
+        if result.trader != spec.name:
+            return abstain(spec.name, spec.model, "provider answered as another trader")
+        return result
+
+
+def make_engine_provider(cfg: ServerConfig, env: RuntimeEnv | None = None) -> EngineProvider:
+    """The provider to hand to ``MarketEngine`` (pipeline, CLI, league)."""
+    return EngineProvider(make_provider(cfg, env))
+
+
 async def gather_beliefs(
     provider: BeliefProvider,
     cfg: ServerConfig,
     bundle: PRBundle,
     traders: Sequence[TraderSpec] | None = None,
 ) -> list[BeliefResult]:
+    """One belief per trader, in roster order, outside the engine (smoke runs, league belief caching)."""
     specs = list(cfg.traders if traders is None else traders)
-    try:
-        contexts = build_contexts(bundle, [s.name for s in specs])
-    except Exception as exc:  # fail closed: every trader abstains, the engine voids the market
-        return [abstain(s.name, s.model, f"context error: {type(exc).__name__}") for s in specs]
-
-    async def one(spec: TraderSpec) -> BeliefResult:
-        try:
-            result = await provider.belief(spec, contexts[spec.name], bundle)
-        except Exception as exc:  # a trader never raises
-            return abstain(spec.name, spec.model, f"provider error: {type(exc).__name__}: {exc}")
-        if result.trader != spec.name:
-            return abstain(spec.name, spec.model, f"provider answered as {result.trader!r}")
-        return result
-
-    return list(await asyncio.gather(*(one(s) for s in specs)))
+    adapter = EngineProvider(provider)
+    return list(await asyncio.gather(*(adapter.get_belief(s, bundle) for s in specs)))

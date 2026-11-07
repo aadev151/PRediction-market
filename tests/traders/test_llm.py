@@ -88,8 +88,10 @@ async def test_missing_or_invalid_parse_abstains(parsed):
 
 
 async def test_exception_abstains_never_raises():
-    r = await LLMProvider(CFG, _client(exc=TimeoutError("slow")), clock=_ticks()).belief(HAIKU, CTX)
-    assert r.abstained and r.error == "llm error: TimeoutError: slow" and r.latency_ms == 250
+    exc = TimeoutError("request body: SECRET_DIFF_TEXT")
+    r = await LLMProvider(CFG, _client(exc=exc), clock=_ticks()).belief(HAIKU, CTX)
+    # Type only (DECISIONS #34): an SDK error message can echo request data.
+    assert r.abstained and r.error == "llm error: TimeoutError" and r.latency_ms == 250
 
 
 async def test_client_construction_failure_abstains(monkeypatch):
@@ -98,7 +100,7 @@ async def test_client_construction_failure_abstains(monkeypatch):
 
     monkeypatch.setattr(llm, "make_client", no_key)
     r = await LLMProvider(CFG).belief(HAIKU, CTX)
-    assert r.abstained and "no credentials" in r.error
+    assert r.abstained and r.error == "llm error: RuntimeError"
 
 
 async def test_unpriced_model_costs_zero():

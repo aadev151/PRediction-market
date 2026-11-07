@@ -77,9 +77,8 @@ class LLMProvider:
             )
         except Exception as exc:  # a trader never raises
             latency_ms = int((self._clock() - start) * 1000)
-            return abstain(
-                spec.name, spec.model, f"llm error: {type(exc).__name__}: {exc}", latency_ms=latency_ms
-            )
+            # Type only: an SDK error message can echo request data (DECISIONS #34).
+            return abstain(spec.name, spec.model, f"llm error: {type(exc).__name__}", latency_ms=latency_ms)
 
         latency_ms = int((self._clock() - start) * 1000)
         usage = getattr(resp, "usage", None)
