@@ -1,0 +1,26 @@
+# Semgrep ignore list. A custom .semgrepignore replaces semgrep's built-in default, so this file
+# restates that default explicitly (https://semgrep.dev/docs/ignoring-files-folders-code/).
+:include .gitignore
+
+# Common large paths
+node_modules/
+build/
+dist/
+vendor/
+.env/
+.venv/
+.tox/
+*.min.js
+.npm/
+.yarn/
+
+# Common test paths: tests use fake tokens and fixed-argv subprocess calls on purpose.
+test/
+tests/
+*_test.go
+
+# Semgrep rules and their rule-test fixtures (.semgrep/tests/ contains deliberate violations;
+# they are checked with `semgrep --test`, not the main scan).
+.semgrep/
+.semgrep_logs/
+

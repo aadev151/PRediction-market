@@ -1,5 +1,6 @@
-# Minimal CI (Phase 0). WP H extends it with semgrep, gitleaks, pip-audit and the canary check (PLAN §8.3).
-# Never use pull_request_target.
+# CI (PLAN §8.3). One job named `ci`: branch protection on main requires this exact check name.
+# Never use pull_request_target: PR code must never run with secrets or a write token.
+# Actions are pinned to full commit SHAs (the comment names the release); bump them deliberately.
 name: ci
 
 on:
@@ -13,10 +14,13 @@ permissions:
 jobs:
   ci:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0 # full history for gitleaks and the canary check
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
           cache: pip
@@ -26,3 +30,47 @@ jobs:
       - run: pytest -q
         env:
           PRM_FAKE_LLM: "1"
+
+      # semgrep is a CI-only tool: install it in its own venv so its dependency tree stays out of
+      # the environment pip-audit checks (docs/DECISIONS.md).
+      - name: semgrep (registry rulesets + .semgrep/rules.yml)
+        run: |
+          python -m venv "$RUNNER_TEMP/semgrep"
+          "$RUNNER_TEMP/semgrep/bin/pip" install --quiet "semgrep==1.184.0"
+          export PATH="$RUNNER_TEMP/semgrep/bin:$PATH"
+          semgrep scan --metrics=off --config p/python --config p/owasp-top-ten --config .semgrep/rules.yml --error
+      - name: semgrep rule tests (.semgrep/tests)
+        run: |
+          export PATH="$RUNNER_TEMP/semgrep/bin:$PATH"
+          for fixture in .semgrep/tests/*; do
+            semgrep --test --metrics=off --config .semgrep/rules.yml "$fixture"
+          done
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false" # the job token is read-only; findings fail the step instead
+
+      # The local editable `prm` is not on PyPI; every installed dependency is still audited.
+      - run: pip-audit --skip-editable --progress-spinner off
+
+      # R-LEAK-1: fail if the holdout canary appears in the tree or anywhere in history.
+      # Prints file names / commit ids only, never the canary value.
+      - name: holdout canary
+        env:
+          HOLDOUT_CANARY: ${{ secrets.HOLDOUT_CANARY }}
+        run: |
+          if [ -z "$HOLDOUT_CANARY" ]; then
+            echo "HOLDOUT_CANARY not set (e.g. fork PR); skipping."
+            exit 0
+          fi
+          if git grep -l -F -e "$HOLDOUT_CANARY"; then
+            echo "::error::holdout canary found in the files listed above"
+            exit 1
+          fi
+          leaked=$(git log --all --format=%h -S "$HOLDOUT_CANARY")
+          if [ -n "$leaked" ]; then
+            echo "::error::holdout canary found in history, commits: $leaked"
+            exit 1
+          fi
