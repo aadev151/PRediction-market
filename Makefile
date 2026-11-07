@@ -4,7 +4,7 @@ BIN    := $(VENV)/bin
 PY     := $(BIN)/python
 SAMPLE := examples/sample-target
 
-.PHONY: setup hooks dev test lint fmt check smoke-llm settle-sample league-sample demo-bug-local demo-good-local demo-reset tunnel
+.PHONY: setup hooks dev test lint fmt check smoke-llm league-sample demo-bug-local demo-good-local demo-reset tunnel
 
 setup: hooks      ## create .venv (Python 3.12), install prm + dev deps, enable git hooks
 	uv venv --python 3.12 $(VENV)
@@ -31,9 +31,6 @@ check: lint test  ## run before every PR
 
 smoke-llm:        ## (WP B) one real call per configured model; needs ANTHROPIC_API_KEY
 	$(BIN)/prm smoke-llm
-
-settle-sample:    ## (WP C, D) settle the sample target's clean head: prints counts only
-	$(BIN)/prm settle --target $(SAMPLE)
 
 league-sample:    ## (WP G) league on the sample target
 	$(BIN)/prm league --target $(SAMPLE) --n 120
