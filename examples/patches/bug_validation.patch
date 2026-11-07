@@ -1,0 +1,13 @@
+diff --git a/notes_app/app.py b/notes_app/app.py
+index ce99495..c1ab318 100644
+--- a/notes_app/app.py
++++ b/notes_app/app.py
+@@ -18,7 +18,7 @@ Clock = Callable[[], float]
+ class NoteIn(BaseModel):
+     model_config = ConfigDict(extra="forbid")
+ 
+-    title: str = Field(min_length=1, max_length=100)
++    title: str = Field(min_length=1)
+     body: str = Field("", max_length=2000)
+ 
+ 
