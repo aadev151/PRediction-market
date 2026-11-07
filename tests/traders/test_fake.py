@@ -1,10 +1,12 @@
+from unittest.mock import patch
+
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from prm.config import TraderSpec
 from prm.traders.fake import FAKE_MODEL, FakeProvider, fake_belief
 from prm.types import BELIEF_MAX, BELIEF_MIN, TRADER_ROLES, TraderContext
-from tests.traders._bundles import GOOD_DIFF, make_bundle
+from tests.traders._bundles import BUG_DIFF, GOOD_DIFF, make_bundle
 
 
 def test_deterministic(bundle):
@@ -19,11 +21,22 @@ def test_bug_diff_crashes_the_price_band(bundle):
     assert "removed_check" in beliefs["security"].key_risks
 
 
-def test_good_diff_is_optimistic(tmp_path):
+def test_good_diff_is_confident_enough_to_merge(tmp_path):
+    """No human band (DECISIONS #28): every quiet belief must clear the 0.90 merge line by more than EPS."""
     b = make_bundle(tmp_path, diff=GOOD_DIFF)
     beliefs = {r: fake_belief(r, b).p_yes for r in TRADER_ROLES}
-    assert beliefs["security"] >= 0.55 and beliefs["diff_reader"] >= 0.55
-    assert all(p >= 0.35 for p in beliefs.values())
+    assert all(0.91 <= p <= 0.98 for p in beliefs.values()), beliefs
+
+
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture], max_examples=200)
+@given(u=st.floats(0.0, 1.0, exclude_max=True), role=st.sampled_from(TRADER_ROLES))
+def test_quiet_and_high_signal_ranges_hold_for_every_hash(tmp_path, u, role):
+    """fake.py's docstring ranges, for ANY sha256 draw: quiet ≥ 0.91 (merges), high signal < 0.60 (blocks)."""
+    with patch("prm.traders.fake._unit", return_value=u):
+        quiet = fake_belief(role, make_bundle(tmp_path, diff=GOOD_DIFF)).p_yes
+        risky = fake_belief(role, make_bundle(tmp_path, diff=BUG_DIFF)).p_yes
+    assert 0.91 <= quiet <= 0.98
+    assert risky < 0.60
 
 
 def test_shape_of_a_fake_belief(bundle):

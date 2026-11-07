@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from prm.config import ServerConfig, TraderSpec
 from prm.traders.base import abstain
 from prm.traders.context import load_prompt
-from prm.types import BELIEF_MAX, BELIEF_MIN, BeliefResult, PRBundle, TraderContext
+from prm.types import BELIEF_MAX, BELIEF_MIN, BeliefResult, EscalationContext, PRBundle, TraderContext
 
 MAX_TOKENS = 4000
 TIMEOUT_S = 45.0
@@ -32,7 +32,10 @@ ABSTAIN_STOP_REASONS = frozenset({"refusal", "max_tokens"})
 
 class Belief(BaseModel):
     p_yes: float = Field(
-        description="Probability in [0,1] that this PR passes ALL hidden holdout tests and the red team"
+        description=(
+            "Probability in [0,1] that this PR, if merged, holds up: no revert and no bug fix to its lines "
+            "(judged by ALL hidden holdout tests and the red team)"
+        )
     )
     rationale: str = Field(description="At most 3 sentences")
     key_risks: list[str] = Field(description="At most 3 short items")
@@ -62,8 +65,14 @@ class LLMProvider:
             return 0.0
 
     async def belief(
-        self, spec: TraderSpec, ctx: TraderContext, bundle: PRBundle | None = None
+        self,
+        spec: TraderSpec,
+        ctx: TraderContext,
+        bundle: PRBundle | None = None,
+        escalation: EscalationContext | None = None,
     ) -> BeliefResult:
+        """One ``messages.parse`` call. In an escalation round ``ctx`` already holds the peers' rationales,
+        so the call is identical (no new SDK parameters)."""
         start = self._clock()
         try:
             if self._client is None:
@@ -77,9 +86,8 @@ class LLMProvider:
             )
         except Exception as exc:  # a trader never raises
             latency_ms = int((self._clock() - start) * 1000)
-            return abstain(
-                spec.name, spec.model, f"llm error: {type(exc).__name__}: {exc}", latency_ms=latency_ms
-            )
+            # Type only: an SDK error message can echo request data (DECISIONS #34).
+            return abstain(spec.name, spec.model, f"llm error: {type(exc).__name__}", latency_ms=latency_ms)
 
         latency_ms = int((self._clock() - start) * 1000)
         usage = getattr(resp, "usage", None)
