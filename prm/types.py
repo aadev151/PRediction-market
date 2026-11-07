@@ -113,6 +113,39 @@ class BeliefResult:
 
 
 @dataclass(frozen=True)
+class PeerView:
+    """What one trader shows the others in an escalation round: its reasoning, never its number.
+
+    The rationale and risks are LLM output written while reading an untrusted diff, so a provider must render
+    them as untrusted data (inside ``<untrusted_*>`` tags), exactly like the diff (R-TRD-3).
+    """
+
+    trader: str
+    rationale: str
+    key_risks: list[str]
+
+
+@dataclass(frozen=True)
+class EscalationContext:
+    """Input to an escalation re-estimate (R-TRD-2, DECISIONS #28): the live price, the trader's own previous
+    belief (None if it abstained), and every other responding trader's rationale."""
+
+    round: int
+    max_rounds: int
+    price: float
+    previous_p_yes: float | None
+    previous_rationale: str
+    peers: tuple[PeerView, ...]
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.round <= self.max_rounds:
+            raise ValueError("need 1 <= round <= max_rounds")
+        _check_prob("price", self.price, open_interval=True)
+        if self.previous_p_yes is not None:
+            _check_prob("previous_p_yes", self.previous_p_yes)
+
+
+@dataclass(frozen=True)
 class TradeResult:
     trader: str
     side: Side

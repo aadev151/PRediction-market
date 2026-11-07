@@ -75,7 +75,11 @@ class Market(Base):
     final_price: Mapped[float | None]
     gate_state: Mapped[str | None] = mapped_column(String(10))
     gate_description: Mapped[str | None] = mapped_column(String(200))
-    outcome: Mapped[str | None] = mapped_column(String(3))
+    outcome: Mapped[str | None] = mapped_column(String(3))  # also set on a refunded market (unpaid check)
+    # How the market ended: 'paid' (SETTLED), 'refunded' (rejected: VOID after the unpaid check, keeps its
+    # gate) or 'void' (error or too few traders). None while open. DECISIONS #27, #29.
+    resolution: Mapped[str | None] = mapped_column(String(10))
+    escalations: Mapped[int] = mapped_column(default=0)  # escalation rounds run (DECISIONS #28)
     holdouts_passed: Mapped[int | None]
     holdouts_total: Mapped[int | None]
     findings_json: Mapped[str | None] = mapped_column(Text)
@@ -96,6 +100,7 @@ class Belief(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     market_id: Mapped[int] = mapped_column(ForeignKey("markets.id"), index=True)
     trader_id: Mapped[int] = mapped_column(ForeignKey("traders.id"))
+    escalation: Mapped[int] = mapped_column(default=0)  # 0 = the first belief; k = escalation round k
     p_yes: Mapped[float | None]
     rationale: Mapped[str] = mapped_column(Text, default="")
     key_risks_json: Mapped[str] = mapped_column(Text, default="[]")
@@ -112,7 +117,8 @@ class Trade(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     market_id: Mapped[int] = mapped_column(ForeignKey("markets.id"), index=True)
     trader_id: Mapped[int] = mapped_column(ForeignKey("traders.id"))
-    round: Mapped[int]
+    escalation: Mapped[int] = mapped_column(default=0)  # 0 = first trading phase; k = escalation round k
+    round: Mapped[int]  # mechanical round within the phase (1..rounds); human trades are 0
     side: Mapped[str] = mapped_column(String(3))
     shares: Mapped[float]
     cost: Mapped[float]

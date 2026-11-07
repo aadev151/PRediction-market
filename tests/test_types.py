@@ -7,8 +7,10 @@ from prm.types import (
     REVEAL_STATES,
     TERMINAL_STATES,
     BeliefResult,
+    EscalationContext,
     Finding,
     GateDecision,
+    PeerView,
     PRBundle,
     SettlementResult,
     State,
@@ -107,3 +109,20 @@ def test_pr_bundle_holds_target_config(tmp_path: Path):
     assert bundle.target.target.name == "t"
     with pytest.raises(AttributeError):
         bundle.diff = "x"  # type: ignore[misc]
+
+
+def test_escalation_context_validates_round_and_price():
+    peers = (PeerView("coverage", "tests are thin", ["no test for limit"]),)
+    ctx = EscalationContext(1, 2, 0.74, 0.7, "looks fine", peers)
+    assert ctx.peers[0].trader == "coverage" and not hasattr(ctx.peers[0], "p_yes")  # reasoning, not numbers
+    EscalationContext(2, 2, 0.74, None, "", ())  # an abstained trader still re-estimates
+    for bad in [
+        dict(round=0),
+        dict(round=3),
+        dict(price=1.0),
+        dict(price=float("nan")),
+        dict(previous_p_yes=1.5),
+    ]:
+        kw = dict(round=1, max_rounds=2, price=0.74, previous_p_yes=0.7, previous_rationale="", peers=())
+        with pytest.raises(ValueError):
+            EscalationContext(**(kw | bad))
