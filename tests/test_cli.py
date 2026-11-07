@@ -61,7 +61,7 @@ def test_smoke_llm_prints_one_line_per_model(monkeypatch, capsys):
 # ---------------------------------------------------------------------------------------------- WP E
 
 
-def _deps(tmp_path, settler):
+def _deps(tmp_path):
     import random
 
     from prm.config import RuntimeEnv, ServerConfig
@@ -75,7 +75,7 @@ def _deps(tmp_path, settler):
     sf = make_session_factory("sqlite://")
     engine = MarketEngine(sf, cfg, EngineProvider(FakeProvider()), rng=random.Random(0))  # noqa: S311
     env = RuntimeEnv(cache_dir=tmp_path / "cache", public_url="http://prm.test")
-    return PipelineDeps(env, cfg, sf, engine, None, settler)
+    return PipelineDeps(env, cfg, sf, engine, None)
 
 
 def test_parse_market_ref():
@@ -105,60 +105,30 @@ def test_serve_runs_uvicorn_factory(monkeypatch):
 def test_repo_add(monkeypatch, tmp_path, capsys):
     from prm import pipeline
 
-    monkeypatch.setattr(pipeline, "_default", _deps(tmp_path, None))
+    monkeypatch.setattr(pipeline, "_default", _deps(tmp_path))
     assert main(["repo", "add", "acme/widgets"]) == 0
     assert "repo acme/widgets registered" in capsys.readouterr().out
 
 
-def test_format_settlement_counts_only():
-    from prm.cli import format_settlement
-    from prm.types import Finding, SettlementResult
-
-    findings = [
-        Finding("r1", "x", "high", True),
-        Finding("r2", "y", "high", False),
-        Finding("r3", "z", "low", True),
-    ]
-    line = format_settlement(SettlementResult("NO", 11, 12, findings, 5, None))
-    assert line == "holdouts 11/12 passed · red team: 1 high · outcome NO"
-
-
-def test_settle_prints_counts(monkeypatch, capsys):
-    import sys
-    import types
-
-    from prm.types import SettlementResult
-
-    seen = []
-    fake = types.ModuleType("prm.settle.local")
-    fake.settle_tree = lambda head, target: (
-        seen.append(target) or SettlementResult("YES", 12, 12, [], 5, None)
-    )
-    monkeypatch.setitem(sys.modules, "prm.settle.local", fake)
-    assert main(["settle", "--target", str(ROOT / "examples" / "sample-target")]) == 0
-    assert capsys.readouterr().out.strip() == "holdouts 12/12 passed · red team: 0 high · outcome YES"
-    assert Path(seen[0].target.holdouts_path).is_absolute()
-
-
-def test_settle_without_wp_d(monkeypatch, capsys):
-    import sys
-    import types
-
-    monkeypatch.setitem(sys.modules, "prm.settle.local", types.ModuleType("prm.settle.local"))
+def test_settle_is_post_merge_now(capsys):
     assert main(["settle", "--target", str(ROOT / "examples" / "sample-target")]) == 2
-    assert "settlement not available" in capsys.readouterr().err
+    assert "settlement is post-merge now" in capsys.readouterr().err
 
 
-def test_demo_bug_local(monkeypatch, tmp_path, capsys):
+@pytest.mark.parametrize(
+    ("kind", "patch", "expected"),
+    [
+        ("bug", "bug_auth.patch", "gate failure · outcome NO"),
+        ("good", "good_docstring.patch", "gate success · outcome YES"),
+    ],
+)
+def test_demo_local_settles_post_merge(monkeypatch, tmp_path, capsys, kind, patch, expected):
     from prm import pipeline
-    from prm.types import SettlementResult
 
-    monkeypatch.setattr(
-        pipeline, "_default", _deps(tmp_path, lambda h, t: SettlementResult("NO", 10, 12, [], 5, None))
-    )
+    monkeypatch.setattr(pipeline, "_default", _deps(tmp_path))
     argv = [
         "demo",
-        "bug",
+        kind,
         "--local",
         "--target",
         str(ROOT / "examples" / "sample-target"),
@@ -167,9 +137,9 @@ def test_demo_bug_local(monkeypatch, tmp_path, capsys):
     ]
     assert main(argv) == 0
     out = capsys.readouterr().out
-    assert "demo bug: bug_auth.patch on local/s" in out
-    assert "gate failure · outcome NO" in out and "settled NO · market right" in out
-    assert "http://prm.test/m/" in out
+    assert f"demo {kind}: {patch} on local/s" in out
+    assert "market 1: SETTLED" in out and expected in out and "· market right" in out
+    assert "http://prm.test/m/1" in out
 
 
 def test_demo_needs_local(capsys):

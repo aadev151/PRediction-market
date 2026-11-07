@@ -13,11 +13,10 @@ import re
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from prm import __version__
 from prm.config import ConfigError, RuntimeEnv, load_server_config, load_target_config
-from prm.types import SettlementResult
 
 if TYPE_CHECKING:
     from prm.pipeline import MarketSummary
@@ -67,6 +66,8 @@ def _cmd_smoke_llm(args: argparse.Namespace) -> int:
 _REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _PR_REF = re.compile(r"^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([0-9]+)$")
 DEMO_PATCHES = {"bug": "bug_auth.patch", "good": "good_docstring.patch"}
+# What happens after the demo merge: the bug gets reverted (settles NO), the good change stays (YES).
+DEMO_AFTER_MERGE: dict[str, Literal["revert", "quiet"]] = {"bug": "revert", "good": "quiet"}
 
 
 def _repo_name(value: str) -> str:
@@ -127,28 +128,15 @@ def _cmd_market(args: argparse.Namespace) -> int:
     return 0
 
 
-def format_settlement(result: SettlementResult) -> str:
-    """Counts only (R-SET-5), e.g. ``holdouts 11/12 passed · red team: 0 high · outcome NO``."""
-    high = sum(1 for f in result.findings if f.severity == "high" and f.confirmed)
-    passed, total = result.holdouts_passed, result.holdouts_total
-    return f"holdouts {passed}/{total} passed · red team: {high} high · outcome {result.outcome}"
+SETTLE_MOVED = (
+    "settlement is post-merge now (DECISIONS #57): a merged PR settles NO on a revert or fix to its lines "
+    "within 14 days, YES otherwise. There is no tree to settle; try `prm demo bug|good --local`."
+)
 
 
 def _cmd_settle(args: argparse.Namespace) -> int:
-    from prm import pipeline
-
-    root = Path(args.target).resolve()
-    try:
-        target = pipeline.absolute_holdouts(load_target_config(root), root)
-    except ConfigError as exc:
-        print(f"config error: {exc}", file=sys.stderr)
-        return 1
-    result = pipeline.default_settler(root, target)
-    if result.error:
-        print(f"settlement error: {result.error}", file=sys.stderr)
-        return 2
-    print(format_settlement(result))
-    return 0 if result.outcome == "YES" else 1
+    print(SETTLE_MOVED, file=sys.stderr)
+    return 2
 
 
 def _cmd_demo(args: argparse.Namespace) -> int:
@@ -169,11 +157,12 @@ def _cmd_demo(args: argparse.Namespace) -> int:
         return 2
     deps = pipeline.default_deps()
     run = pipeline.run_local_market(
-        target, patch, repo=args.repo, description=f"demo: {patch.name}", deps=deps
-    )
+        target, patch, repo=args.repo, description=f"demo: {patch.name}",
+        after_merge=DEMO_AFTER_MERGE[args.action], deps=deps,
+    )  # fmt: skip
     try:
         market_id = asyncio.run(run)
-    except (ConfigError, pipeline.PatchError) as exc:
+    except (ConfigError, pipeline.PatchError, pipeline.DemoGitError) as exc:
         print(f"demo failed: {exc}", file=sys.stderr)
         return 1
     summary = pipeline.summarize(deps, market_id)
@@ -230,8 +219,8 @@ def build_parser() -> argparse.ArgumentParser:
     market.add_argument("pr", type=_pr_ref, help="owner/repo#N")
     market.set_defaults(func=_cmd_market)
 
-    settle = sub.add_parser("settle", help="settle a local target's tree; prints counts only")
-    settle.add_argument("--target", required=True, help="target root")
+    settle = sub.add_parser("settle", help="retired: settlement is post-merge now (prints why, exits 2)")
+    settle.add_argument("--target", default=None, help="ignored (kept for old scripts)")
     settle.set_defaults(func=_cmd_settle)
 
     demo = sub.add_parser("demo", help="demo markets: bug | good | reset")

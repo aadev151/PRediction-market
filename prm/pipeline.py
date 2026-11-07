@@ -1,12 +1,16 @@
 """WP E. run_pr_market(repo, pr, sha); any exception -> void + failure status. PLAN §6.13.
 
-One market per PR head: status pending -> ``.prm.toml`` from the BASE sha -> PR, diff and both trees -> engine
-create / run_agents (escalations post pending) / close / gate -> status -> settle -> final status.
-``run_local_market`` runs the same engine path on a local target plus a patch, with no GitHub calls.
+GitHub: status pending -> ``.prm.toml`` from the BASE sha -> PR, diff and both trees -> engine create /
+run_agents (escalations post pending) / close / gate -> status. The market then stays GATED: post-merge
+settlement (DECISIONS #57) needs the merge event and a clone, which aren't wired yet.
 
-Fail closed: any exception VOIDs the market (if one exists) and posts ``failure``; only the exception type is
-logged. The settler is injectable; the default is WP D's ``settle_tree``, and if that isn't importable the
-result is an infra error, which VOIDs the market.
+Local demo (``run_local_market``): the same engine path on a local target plus a patch, no GitHub calls. It
+then settles with the REAL post-merge oracle in a throwaway git repo: the patch is merged with ``--no-ff``,
+and either reverted (``after_merge="revert"`` -> NO) or left alone with the window fast-forwarded
+(``"quiet"`` -> YES).
+
+Fail closed: any exception VOIDs the market (if one exists) and posts ``failure``. Only the exception type is
+logged or stored (void reasons are public on the API).
 """
 
 from __future__ import annotations
@@ -20,8 +24,9 @@ import tempfile
 import weakref
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -30,7 +35,6 @@ from prm.config import (
     ConfigError,
     RuntimeEnv,
     ServerConfig,
-    TargetConfig,
     load_server_config,
     load_target_config,
     parse_target_config,
@@ -39,13 +43,14 @@ from prm.db import make_session_factory
 from prm.github.client import GitHubClient, check_repo
 from prm.market.engine import MarketEngine
 from prm.models import Market, utcnow
+from prm.settle.postmerge import MergedPR, evaluate, settle_postmerge
 from prm.types import PRBundle, SettlementResult, State
 
 log = logging.getLogger(__name__)
 
-Settler = Callable[[Path, TargetConfig], SettlementResult]
 # (state, description, target_url) -> posts a `pr-market` status (GitHub) or records it (local demo).
 StatusSink = Callable[[str, str, str | None], Awaitable[None]]
+AfterMerge = Literal["revert", "quiet"]
 
 MAX_CONCURRENT_MARKETS = 2
 OPEN_DESCRIPTION = "market open…"
@@ -54,6 +59,9 @@ BAD_CONFIG_DESCRIPTION = "invalid .prm.toml on base branch"
 SUPERSEDED_DESCRIPTION = "superseded: the PR head moved"
 FACTORY_ERROR = "factory error: human review required"
 COPY_IGNORE = shutil.ignore_patterns(".venv", "__pycache__", ".git", ".pytest_cache", ".prm-cache")
+DEMO_BRANCH = "main"
+REVERT_DELAY = timedelta(hours=1)  # demo: the revert lands an hour after the merge...
+REVERT_SETTLE_AFTER = timedelta(days=1)  # ...and the oracle looks a day after the merge
 _DONE = frozenset({State.GATED, State.SETTLING, State.SETTLED, State.VOID})
 
 
@@ -61,13 +69,8 @@ class PatchError(RuntimeError):
     """``git apply`` could not apply the demo patch."""
 
 
-def default_settler(head_dir: Path, target: TargetConfig) -> SettlementResult:
-    """WP D's local settler, imported lazily. Not available yet -> infra error, which VOIDs the market."""
-    try:
-        from prm.settle.local import settle_tree  # type: ignore[attr-defined]
-    except ImportError:
-        return SettlementResult.infra_error("settlement not available")
-    return settle_tree(head_dir, target)
+class DemoGitError(RuntimeError):
+    """A git step building the throwaway demo repo failed."""
 
 
 @dataclass
@@ -79,7 +82,6 @@ class PipelineDeps:
     session_factory: sessionmaker[Session]
     engine: MarketEngine
     github: GitHubClient
-    settler: Settler = default_settler
     clock: Callable[[], datetime] = utcnow
 
     @classmethod
@@ -91,7 +93,6 @@ class PipelineDeps:
         session_factory: sessionmaker[Session] | None = None,
         provider: object | None = None,
         github: GitHubClient | None = None,
-        settler: Settler | None = None,
         clock: Callable[[], datetime] = utcnow,
     ) -> PipelineDeps:
         from prm.traders.roster import make_engine_provider
@@ -101,7 +102,7 @@ class PipelineDeps:
         sf = session_factory or make_session_factory(env)
         llm = provider or make_engine_provider(cfg, env)
         engine = MarketEngine(sf, cfg, llm, clock=clock)  # type: ignore[arg-type]
-        return cls(env, cfg, sf, engine, github or GitHubClient(), settler or default_settler, clock)
+        return cls(env, cfg, sf, engine, github or GitHubClient(), clock)
 
 
 _default: PipelineDeps | None = None
@@ -132,16 +133,6 @@ def _market_slot() -> asyncio.Semaphore:
     return sem
 
 
-def absolute_holdouts(target: TargetConfig, target_root: Path) -> TargetConfig:
-    """Resolve a local ``holdouts_path`` (relative to the target root) to an absolute path, so the settler
-    can run on a temp copy of the tree. Targets with ``holdouts_repo`` are returned unchanged."""
-    path = target.holdouts_dir(target_root)
-    if path is None:
-        return target
-    section = target.target.model_copy(update={"holdouts_path": str(path)})
-    return target.model_copy(update={"target": section})
-
-
 def _state(deps: PipelineDeps, market_id: int) -> State:
     with deps.session_factory() as s:
         m = s.get(Market, market_id)
@@ -151,48 +142,40 @@ def _state(deps: PipelineDeps, market_id: int) -> State:
 def _work_dir(deps: PipelineDeps, prefix: str) -> Path:
     cache = Path(deps.env.cache_dir)
     cache.mkdir(parents=True, exist_ok=True)
-    return Path(tempfile.mkdtemp(prefix=prefix, dir=cache))
+    return Path(tempfile.mkdtemp(prefix=prefix, dir=cache)).resolve()
 
 
 async def _post_final(
-    deps: PipelineDeps, market_id: int, target: TargetConfig, sink: StatusSink, url: str
+    deps: PipelineDeps, market_id: int, bundle: PRBundle, sink: StatusSink, url: str
 ) -> None:
-    decision = deps.engine.gate(market_id, target.gate)  # idempotent; VOID -> failure
+    decision = deps.engine.gate(market_id, bundle.target.gate)  # idempotent; VOID -> failure
     await sink(decision.state, deps.engine.status_description(market_id), url)
 
 
-async def _run_market(deps: PipelineDeps, bundle: PRBundle, sink: StatusSink, holder: list[int]) -> int:
-    """create -> run_agents -> close -> gate -> status -> settle -> final status. ``holder`` gets the market
-    id as soon as it exists, so the caller can void it on any exception."""
-    engine, target = deps.engine, bundle.target
-    repo_id = engine.ensure_repo(bundle.repo)
-    market_id = engine.create(repo_id, bundle)
+async def _open_and_gate(deps: PipelineDeps, bundle: PRBundle, sink: StatusSink, holder: list[int]) -> bool:
+    """create -> run_agents -> close -> gate -> status. ``holder`` gets the market id as soon as it exists,
+    so the caller can void it on any exception. True if the market is now freshly GATED."""
+    engine = deps.engine
+    market_id = engine.create(engine.ensure_repo(bundle.repo), bundle)
     holder.append(market_id)
     url = f"{deps.env.public_url}/m/{market_id}"
     state = _state(deps, market_id)
     if state != State.CONTEXT_READY:  # an existing market for this sha (a redelivery or a rerun)
         if state in _DONE:
-            await _post_final(deps, market_id, target, sink, url)
-        return market_id
+            await _post_final(deps, market_id, bundle, sink, url)
+        return False
 
     async def on_escalation(k: int, max_rounds: int, p: float) -> None:
         await sink("pending", f"escalation {k}/{max_rounds} (p={p:.2f})", url)
 
     await engine.run_agents(market_id, bundle, on_escalation=on_escalation)
     if _state(deps, market_id) == State.VOID:  # too few traders responded
-        await _post_final(deps, market_id, target, sink, url)
-        return market_id
+        await _post_final(deps, market_id, bundle, sink, url)
+        return False
     engine.close(market_id)
-    decision = engine.gate(market_id, target.gate)
+    decision = engine.gate(market_id, bundle.target.gate)
     await sink(decision.state, decision.description, url)
-    if _state(deps, market_id) != State.GATED:
-        return market_id
-    if target.settle.driver == "remote":  # P1: the target's action POSTs the counts later
-        return market_id
-    result = await asyncio.to_thread(deps.settler, bundle.head_dir, target)
-    engine.settle(market_id, result)
-    await _post_final(deps, market_id, target, sink, url)
-    return market_id
+    return _state(deps, market_id) == State.GATED
 
 
 async def _fail_closed(
@@ -215,8 +198,13 @@ async def _fail_closed(
 
 
 async def run_pr_market(repo: str, pr: int, sha: str, *, deps: PipelineDeps | None = None) -> int | None:
-    """Run one GitHub PR market end to end. Returns the market id (None if no market was opened)."""
-    deps = deps or default_deps()
+    """Run one GitHub PR market up to its gate and post the status. Returns the market id (None if no market
+    was opened). Never raises (except cancellation, after voiding): every error is a failure status."""
+    try:
+        deps = deps or default_deps()
+    except Exception as exc:
+        log.error("pipeline: cannot build dependencies (%s)", type(exc).__name__)
+        return None
     gh = deps.github
 
     async def post(state: str, description: str, url: str | None) -> None:
@@ -249,7 +237,9 @@ async def run_pr_market(repo: str, pr: int, sha: str, *, deps: PipelineDeps | No
             bundle = PRBundle(
                 "github", repo, pr, sha, info.base_sha, diff, description, base_dir, head_dir, target
             )
-            return await _run_market(deps, bundle, post, holder)
+            # GATED is final for now: post-merge settlement needs the merge event and a clone (not wired).
+            await _open_and_gate(deps, bundle, post, holder)
+            return holder[0] if holder else None
         except asyncio.CancelledError as exc:
             await _fail_closed(deps, exc, holder, None)
             raise
@@ -261,19 +251,82 @@ async def run_pr_market(repo: str, pr: int, sha: str, *, deps: PipelineDeps | No
                 shutil.rmtree(work, ignore_errors=True)
 
 
-def apply_patch(tree: Path, patch: Path) -> None:
-    """``git apply`` a target-relative patch inside ``tree`` (shell=False). Git is fenced to ``tree``, so an
-    enclosing repository (e.g. the cache dir inside a checkout) can't swallow the patch paths."""
+# ------------------------------------------------------------------------------------------- local demo
+
+
+def _git_env(work: Path, when: datetime | None = None) -> dict[str, str]:
+    """No factory secrets, no user/system git config, git fenced to ``work`` (an enclosing checkout can't
+    swallow the paths), and optional fixed commit dates so the oracle sees a deterministic history."""
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": str(work),
+        "LC_ALL": "C",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CEILING_DIRECTORIES": str(work),
+    }
+    if when is not None:
+        stamp = f"@{int(when.timestamp())} +0000"
+        env["GIT_AUTHOR_DATE"] = env["GIT_COMMITTER_DATE"] = stamp
+    return env
+
+
+def _git(repo: Path, work: Path, *args: str, when: datetime | None = None) -> str:
     git = shutil.which("git")
     if git is None:
-        raise PatchError("git not found on PATH")
-    env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(Path(tree).resolve().parent)}
+        raise DemoGitError("git not found on PATH")
+    argv = [
+        git, "-C", str(repo), "-c", "user.name=prm", "-c", "user.email=prm@localhost",
+        "-c", "commit.gpgsign=false", *args,
+    ]  # fmt: skip
     proc = subprocess.run(  # noqa: S603 - fixed argv, shell=False
-        [git, "apply", "--whitespace=nowarn", str(Path(patch).resolve())],
-        cwd=tree, env=env, shell=False, capture_output=True, text=True, timeout=60, check=False,
-    )  # fmt: skip
+        argv, env=_git_env(work, when), shell=False, capture_output=True, text=True, timeout=60, check=False
+    )
     if proc.returncode != 0:
-        raise PatchError(f"git apply {Path(patch).name} failed: {proc.stderr.strip()[:300]}")
+        raise DemoGitError(f"git {args[0]} exited {proc.returncode}")
+    return proc.stdout.strip()
+
+
+def apply_patch(tree: Path, patch: Path) -> None:
+    """``git apply`` a target-relative patch inside ``tree`` (shell=False), fenced to ``tree``'s parent."""
+    tree = Path(tree).resolve()
+    try:
+        _git(tree, tree.parent, "apply", "--whitespace=nowarn", str(Path(patch).resolve()))
+    except DemoGitError as exc:
+        raise PatchError(f"git apply {Path(patch).name} failed ({exc})") from None
+
+
+def _demo_repo(root: Path, patch: Path, work: Path, message: str) -> tuple[Path, str]:
+    """A throwaway repo: commit the target as "base" on ``main``, the patched tree on branch ``pr``.
+    Returns (repo, pr_commit)."""
+    repo = work / "repo"
+    shutil.copytree(root, repo, ignore=COPY_IGNORE)
+    _git(repo, work, "init", "-q")
+    _git(repo, work, "symbolic-ref", "HEAD", f"refs/heads/{DEMO_BRANCH}")
+    _git(repo, work, "add", "-A")
+    _git(repo, work, "commit", "-q", "-m", "base")
+    _git(repo, work, "checkout", "-q", "-b", "pr")
+    apply_patch(repo, patch)
+    _git(repo, work, "add", "-A")
+    _git(repo, work, "commit", "-q", "-m", message)
+    return repo, _git(repo, work, "rev-parse", "HEAD")
+
+
+def _merge_and_settle(
+    repo: Path, work: Path, pr_commit: str, after_merge: AfterMerge, merged_at: datetime
+) -> SettlementResult:
+    """Merge ``pr`` with --no-ff at ``merged_at``, optionally revert it, then ask the post-merge oracle."""
+    _git(repo, work, "checkout", "-q", DEMO_BRANCH)
+    _git(repo, work, "merge", "-q", "--no-ff", "-m", "Merge demo PR", "pr", when=merged_at)
+    merged = MergedPR(_git(repo, work, "rev-parse", "HEAD"), merged_at)
+    if after_merge == "revert":
+        _git(repo, work, "revert", "--no-edit", pr_commit, when=merged_at + REVERT_DELAY)
+        now = merged_at + REVERT_SETTLE_AFTER
+    else:  # fast-forward the window: a quiet PR settles YES at its end
+        now = evaluate(repo, merged, now=merged_at, branch=DEMO_BRANCH).settles_at
+    result = settle_postmerge(repo, merged, now=now, branch=DEMO_BRANCH)
+    return result or SettlementResult.infra_error("post-merge settlement still pending")
 
 
 async def run_local_market(
@@ -282,18 +335,22 @@ async def run_local_market(
     *,
     repo: str,
     description: str = "local demo market",
+    after_merge: AfterMerge = "quiet",
     deps: PipelineDeps | None = None,
     statuses: list[tuple[str, str, str | None]] | None = None,
 ) -> int:
-    """A full demo market on a local target + patch: no GitHub calls, written to the DB for the dashboard.
+    """A full demo market on a local target + patch: no GitHub calls, written to the DB for the dashboard,
+    settled by the real post-merge oracle (``after_merge``: "revert" -> NO, "quiet" -> YES).
 
     ``statuses`` (optional) collects the status sequence a PR would have seen. Raises ``ConfigError`` /
     ``PatchError`` before a market exists; after that every error VOIDs the market and its id is returned.
     """
     deps = deps or default_deps()
     check_repo(repo)
+    if after_merge not in ("revert", "quiet"):
+        raise ValueError(f"after_merge must be 'revert' or 'quiet', got {after_merge!r}")
     root = Path(target_dir).resolve()
-    target = absolute_holdouts(load_target_config(root), root)
+    target = load_target_config(root)
     patch = Path(patch).resolve()
     diff = patch.read_text(encoding="utf-8")
     seen = statuses if statuses is not None else []
@@ -309,30 +366,36 @@ async def run_local_market(
             shutil.copytree(root, base_dir, ignore=COPY_IGNORE)
             shutil.copytree(root, head_dir, ignore=COPY_IGNORE)
             apply_patch(head_dir, patch)
+            git_repo, pr_commit = await asyncio.to_thread(_demo_repo, root, patch, work, description)
             bundle = PRBundle("demo", repo, None, None, None, diff, description, base_dir, head_dir, target)
             await record("pending", OPEN_DESCRIPTION, None)
             try:
-                return await _run_market(deps, bundle, record, holder)
+                if await _open_and_gate(deps, bundle, record, holder):
+                    market_id = holder[0]
+                    merged_at = deps.clock()
+                    result = await asyncio.to_thread(
+                        _merge_and_settle, git_repo, work, pr_commit, after_merge, merged_at
+                    )
+                    deps.engine.settle(market_id, result)
+                    await _post_final(deps, market_id, bundle, record, f"{deps.env.public_url}/m/{market_id}")
             except Exception as exc:
                 await _fail_closed(deps, exc, holder, record)
                 if not holder:
                     raise
-                return holder[0]
+            return holder[0]
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
 
 @dataclass(frozen=True)
 class MarketSummary:
-    """What the CLI prints after a market (counts only, never holdout names)."""
+    """What the CLI prints after a market."""
 
     id: int
     state: str
     final_price: float | None
     gate: str | None
     outcome: str | None
-    holdouts_passed: int | None
-    holdouts_total: int | None
     description: str
 
 
@@ -341,5 +404,5 @@ def summarize(deps: PipelineDeps, market_id: int) -> MarketSummary:
         m = s.get(Market, market_id)
         if m is None:
             raise LookupError(market_id)
-        row = (m.state, m.final_price, m.gate_state, m.outcome, m.holdouts_passed, m.holdouts_total)
+        row = (m.state, m.final_price, m.gate_state, m.outcome)
     return MarketSummary(market_id, *row, deps.engine.status_description(market_id))
