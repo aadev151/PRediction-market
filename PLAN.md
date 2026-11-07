@@ -526,6 +526,8 @@ PRM_SANDBOX=subprocess
 
 Merge order: Phase 0 → A, B, C, H in parallel → D → E (+F in parallel) → **live with a webhook by 2:45** → G → K → J → (L only if ahead) → polish.
 
+**Last stretch (after J): follow [`docs/FINISH_PLAN.md`](docs/FINISH_PLAN.md)**: real-model check, the live PR, README, real league numbers, rehearsal.
+
 ---
 
 ## 10. Timeline (hard checkpoints)
