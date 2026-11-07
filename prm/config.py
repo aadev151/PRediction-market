@@ -260,8 +260,10 @@ class TargetSection(_Strict):
 
     @model_validator(mode="after")
     def _one_holdouts_source(self) -> TargetSection:
-        if (self.holdouts_repo is None) == (self.holdouts_path is None):
-            raise ValueError("set exactly one of target.holdouts_repo or target.holdouts_path")
+        # At most one source. None is fine: settlement is the post-merge oracle (DECISIONS #57), so a GitHub
+        # target needs no hidden-test repo; only the league's local oracle reads ``holdouts_path``.
+        if self.holdouts_repo is not None and self.holdouts_path is not None:
+            raise ValueError("set at most one of target.holdouts_repo or target.holdouts_path")
         return self
 
 
