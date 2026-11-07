@@ -21,6 +21,7 @@ from prm.server import (
     admin_token,
     create_app,
     github_hmac,
+    judge_cookie,
     public,
     route_auth,
     undeclared_routes,
@@ -115,7 +116,14 @@ def settle(eng: MarketEngine, mid: int, outcome: str = "YES") -> float:
 
 def test_every_route_declares_exactly_one_auth(app):
     assert undeclared_routes(app) == []
-    expected = {("POST", "/api/repos"): admin_token, ("POST", "/api/hooks/github"): github_hmac}
+    expected = {
+        ("POST", "/api/repos"): admin_token,
+        ("POST", "/api/hooks/github"): github_hmac,
+        ("POST", "/api/demo/markets"): admin_token,
+        ("POST", "/api/demo/markets/{market_id}/close-and-settle"): admin_token,
+        ("GET", "/api/judges/me"): judge_cookie,
+        ("POST", "/api/markets/{market_id}/human-trades"): judge_cookie,
+    }
     for route in app.routes:
         if isinstance(route, APIRoute):
             for method in route.methods:
@@ -125,7 +133,7 @@ def test_every_route_declares_exactly_one_auth(app):
 def test_an_undeclared_route_is_detected(app):
     app.add_api_route("/sneaky", lambda: {}, methods=["GET"])
     assert undeclared_routes(app) == ["['GET'] /sneaky"]
-    assert len(AUTH_DECLARATIONS) == 3
+    assert len(AUTH_DECLARATIONS) == 4
 
 
 def test_admin_auth_fails_closed_without_env(client, monkeypatch):

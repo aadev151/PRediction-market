@@ -1,8 +1,8 @@
 """WP E. FastAPI app: API routes (each declares its auth) + dashboard. PLAN §4.
 
 Auth is declarative: every route carries exactly one of the dependencies in ``AUTH_DECLARATIONS``
-(``public``, ``admin_token``, ``github_hmac``). ``create_app`` refuses to build an app with an undeclared
-route, and ``tests/test_server.py`` checks the same thing. Secrets (``PRM_ADMIN_TOKEN``,
+(``public``, ``admin_token``, ``github_hmac``, ``judge_cookie``). ``create_app`` refuses to build an app
+with an undeclared route, and ``tests/test_server.py`` checks the same thing. Secrets (``PRM_ADMIN_TOKEN``,
 ``GITHUB_WEBHOOK_SECRET``) are read from the environment on every request and never logged; if one is unset
 its routes answer 503 (fail closed).
 
@@ -12,26 +12,29 @@ settlement as counts only (holdouts passed/total, finding titles and severities)
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import io
 import json
 import logging
 import os
 import re
+import threading
 import time
 import uuid
+from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import segno
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.routing import APIRoute
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import case, func, or_, select
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import MutableHeaders
@@ -40,9 +43,11 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from prm.config import RuntimeEnv, ServerConfig, load_server_config
 from prm.db import init_db, make_engine, make_session_factory
+from prm.demo import DemoConflict, DemoUnavailable, JudgeDemo
 from prm.github.webhook import Deduper, classify_pr_event, valid_repo_name, verify_signature
 from prm.market import lmsr
-from prm.market.engine import MarketEngine
+from prm.market.engine import MarketEngine, MarketNotFound, TradeConflict, TradeRejected
+from prm.market.state import IllegalAction
 from prm.models import Belief, Event, LeagueRun, Market, Position, Repo, Trade, Trader
 from prm.types import REVEAL_STATES, State
 
@@ -98,8 +103,69 @@ async def github_hmac(request: Request) -> None:
         raise HTTPException(401, "bad signature")
 
 
-AUTH_DECLARATIONS = frozenset({public, admin_token, github_hmac})
+JUDGE_COOKIE = "prm_judge"
+JUDGE_COOKIE_MAX_AGE = 2 * 24 * 3600
+_JUDGE_ID = re.compile(r"^[0-9]{1,12}$")
+
+
+def judge_key() -> bytes | None:
+    """The judge-cookie signing key, derived from the admin token (None if unset: judge routes answer 503)."""
+    admin = os.environ.get("PRM_ADMIN_TOKEN", "")
+    return hmac.new(admin.encode(), b"prm_judge cookie v1", hashlib.sha256).digest() if admin else None
+
+
+def sign_judge(trader_id: int, key: bytes) -> str:
+    return f"{trader_id}.{hmac.new(key, f'judge:{trader_id}'.encode(), hashlib.sha256).hexdigest()}"
+
+
+def verify_judge(value: str, key: bytes) -> int | None:
+    """The trader id from a well-formed, correctly signed cookie, else None (constant-time compare)."""
+    raw_id = value.partition(".")[0]
+    if not _JUDGE_ID.match(raw_id):
+        return None
+    trader_id = int(raw_id)
+    return trader_id if hmac.compare_digest(value.encode(), sign_judge(trader_id, key).encode()) else None
+
+
+def judge_cookie(request: Request) -> None:
+    """Auth declaration: the HMAC-signed ``prm_judge`` cookie set by ``POST /api/judges``. Sets
+    ``request.state.judge_id``. No admin token configured -> 503; a missing or bad cookie -> 401."""
+    key = judge_key()
+    if key is None:
+        raise HTTPException(503, "judge betting not configured")
+    trader_id = verify_judge(request.cookies.get(JUDGE_COOKIE, ""), key)
+    if trader_id is None:
+        raise HTTPException(401, "join as a judge first")
+    request.state.judge_id = trader_id
+
+
+AUTH_DECLARATIONS = frozenset({public, admin_token, github_hmac, judge_cookie})
 PUBLIC, ADMIN, GITHUB_HMAC = Depends(public), Depends(admin_token), Depends(github_hmac)
+JUDGE = Depends(judge_cookie)
+
+
+class RateLimiter:
+    """At most ``limit`` hits per ``window_s`` seconds per key (in memory, per process)."""
+
+    MAX_KEYS = 10_000
+
+    def __init__(self, limit: int, window_s: float, clock: Callable[[], float] = time.monotonic) -> None:
+        self.limit, self.window_s, self._clock = limit, window_s, clock
+        self._hits: dict[str, deque[float]] = {}
+        self._lock = threading.Lock()
+
+    def allow(self, key: str) -> bool:
+        now = self._clock()
+        with self._lock:
+            if len(self._hits) > self.MAX_KEYS:
+                self._hits = {k: q for k, q in self._hits.items() if q and q[-1] > now - self.window_s}
+            q = self._hits.setdefault(key, deque())
+            while q and q[0] <= now - self.window_s:
+                q.popleft()
+            if len(q) >= self.limit:
+                return False
+            q.append(now)
+            return True
 
 
 def route_auth(route: APIRoute) -> list[Callable[..., Any]]:
@@ -248,6 +314,25 @@ class RepoIn(BaseModel):
         return v
 
 
+class JudgeIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(max_length=200)
+
+    @field_validator("name")
+    @classmethod
+    def _display_name(cls, v: str) -> str:
+        v = " ".join(v.split())
+        if not v or len(v) > 32 or not v.isprintable():
+            raise ValueError("name must be 1-32 printable characters")
+        return v
+
+
+class HumanTradeIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    side: Literal["YES", "NO"]
+    spend: float = Field(gt=0, allow_inf_nan=False)
+
+
 def _safe_qr_path(path: str) -> bool:
     return path.startswith("/") and not path.startswith("//") and "\\" not in path and path.isprintable()
 
@@ -273,6 +358,7 @@ def create_app(
     cfg: ServerConfig | None = None,
     *,
     run_market: RunMarket | None = None,
+    demo: JudgeDemo | None = None,
 ) -> FastAPI:
     env = RuntimeEnv.from_env() if env is None else env
     cfg = load_server_config(env.server_config) if cfg is None else cfg
@@ -281,6 +367,8 @@ def create_app(
     sf = make_session_factory(db_engine)
     engine = MarketEngine(sf, cfg, _NoBeliefs())
     deduper = Deduper()
+    judge_limiter = RateLimiter(10, 60.0)
+    demos: list[JudgeDemo] = [demo] if demo is not None else []
     _ensure_access_handler()
 
     @asynccontextmanager
@@ -508,10 +596,133 @@ def create_app(
         segno.make(env.public_url + path, error="m").save(buf, kind="svg", scale=8, border=2, xmldecl=False)
         return Response(buf.getvalue(), media_type="image/svg+xml")
 
-    # P1 (WP J) routes go here, each with its auth declaration: POST /api/demo/markets and
-    # POST /api/demo/markets/{id}/close-and-settle (ADMIN), POST /api/judges (PUBLIC, rate-limited) and
-    # POST /api/markets/{id}/human-trades (judge cookie). P1 remote settlement: POST /api/markets/{id}/settle
-    # (HMAC with SETTLE_HMAC_SECRET). Add a new auth kind to AUTH_DECLARATIONS for the cookie and the HMAC.
+    # ------------------------------------------------------------------------- judge betting (WP J)
+
+    def get_demo() -> JudgeDemo:
+        if not demos:
+            try:
+                demos.append(JudgeDemo.from_env(sf, cfg, env))
+            except Exception as exc:
+                log.error("judge demo unavailable: %s", type(exc).__name__)
+                raise HTTPException(503, "judge markets not configured") from exc
+        return demos[0]
+
+    @app.post("/api/demo/markets", status_code=202, dependencies=[ADMIN])
+    async def open_demo_market(background: BackgroundTasks) -> dict[str, Any]:
+        d = get_demo()
+        try:
+            market_id, bundle = await run_in_threadpool(d.open)
+        except DemoUnavailable as exc:
+            raise HTTPException(503, str(exc)) from exc
+        except DemoConflict as exc:
+            raise HTTPException(409, str(exc)) from exc
+        background.add_task(d.run_agents, market_id, bundle)
+        return {"market_id": market_id, "repo": bundle.repo}
+
+    @app.post("/api/demo/markets/{market_id}/close-and-settle", dependencies=[ADMIN])
+    async def close_and_settle_demo(market_id: int) -> dict[str, Any]:
+        try:
+            payouts = await get_demo().close_and_settle(market_id)
+        except DemoConflict as exc:
+            raise HTTPException(409, str(exc)) from exc
+        with sf() as s:
+            m = s.get_one(Market, market_id)
+            out = _pick(m, ("id", "state", "final_price", "outcome", "gate_state", "gate_description"))
+        return {**out, "payouts": {k: round(v, 6) for k, v in payouts.items()}}
+
+    @app.get("/api/demo/current", dependencies=[PUBLIC])
+    def current_demo_market() -> dict[str, Any]:
+        q = (
+            select(Market, Repo.full_name)
+            .join(Repo, Repo.id == Market.repo_id)
+            .where(Market.source == "demo")
+        )
+        with sf() as s:
+            row = s.execute(q.order_by(Market.id.desc()).limit(1)).first()
+            return {"market": market_summary(row[0], row[1]) if row else None}
+
+    @app.post("/api/judges", status_code=201, dependencies=[PUBLIC])
+    def create_judge(body: JudgeIn, request: Request, response: Response) -> dict[str, Any]:
+        key = judge_key()
+        if key is None:
+            raise HTTPException(503, "judge betting not configured")
+        if not judge_limiter.allow(request.client.host if request.client else "?"):
+            raise HTTPException(
+                429, "too many new judges from this address; wait a minute", {"Retry-After": "60"}
+            )
+        with sf.begin() as s:
+            taken = set(s.scalars(select(Trader.name).where(Trader.kind == "human")))
+            name, n = body.name, 2
+            while name in taken:
+                name, n = f"{body.name} {n}", n + 1
+            t = Trader(repo_id=None, name=name, kind="human", model=None, bankroll=cfg.market.start_bankroll)
+            s.add(t)
+            s.flush()
+            out = {"id": t.id, "name": t.name, "bankroll": t.bankroll}
+        response.set_cookie(
+            JUDGE_COOKIE, sign_judge(out["id"], key), max_age=JUDGE_COOKIE_MAX_AGE, path="/", httponly=True,
+            samesite="lax", secure=env.public_url.startswith("https://"),
+        )  # fmt: skip
+        return out
+
+    @app.get("/api/judges/me", dependencies=[JUDGE])
+    def judge_me(request: Request) -> dict[str, Any]:
+        with sf() as s:
+            t = s.get(Trader, request.state.judge_id)
+            if t is None or t.kind != "human":
+                raise HTTPException(401, "join as a judge first")
+            rows = s.execute(
+                select(Position, Market.state, Market.outcome)
+                .join(Market, Market.id == Position.market_id)
+                .where(Position.trader_id == t.id)
+                .order_by(Position.market_id.desc())
+                .limit(20)
+            ).all()
+            positions = [
+                {
+                    "market_id": p.market_id,
+                    "state": state,
+                    "outcome": outcome,
+                    "yes_shares": p.yes_shares,
+                    "no_shares": p.no_shares,
+                    "spent": p.spent,
+                    "cap": p.cap,
+                    "payout": p.payout,
+                    "pnl": None if p.payout is None else round(p.payout - p.spent, 6),
+                }  # fmt: skip
+                for p, state, outcome in rows
+            ]
+            mp = cfg.market
+            return {
+                "id": t.id, "name": t.name, "bankroll": t.bankroll,
+                "next_cap": max(0.0, min(mp.max_spend_fraction * t.bankroll, mp.max_spend_abs)),
+                "pnl": round(sum(p["pnl"] or 0.0 for p in positions), 6), "positions": positions,
+            }  # fmt: skip
+
+    @app.post("/api/markets/{market_id}/human-trades", dependencies=[JUDGE])
+    def human_trade(market_id: int, body: HumanTradeIn, request: Request) -> dict[str, Any]:
+        with sf() as s:
+            source = s.scalar(select(Market.source).where(Market.id == market_id))
+        if source is None:
+            raise HTTPException(404, "market not found")
+        if source != "demo":
+            raise HTTPException(409, "judges only bet on judge markets")
+        try:
+            r = engine.human_trade(market_id, request.state.judge_id, body.side, body.spend)
+        except MarketNotFound as exc:
+            raise HTTPException(404, "market not found") from exc
+        except TradeRejected as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except IllegalAction as exc:
+            raise HTTPException(409, "betting is closed for this market") from exc
+        except TradeConflict as exc:
+            raise HTTPException(409, "someone traded at the same moment; try again") from exc
+        return {
+            "side": r.side, "shares": r.shares, "cost": r.cost, "price_before": r.price_before,
+            "price_after": r.price_after,
+        }  # fmt: skip
+
+    # P1 remote settlement (POST /api/markets/{id}/settle, HMAC with the settle secret) is not built yet.
 
     # ------------------------------------------------------------------------------------------ pages
 
