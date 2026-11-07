@@ -259,7 +259,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         f" · warm-up: {report['warmup']} · seed: {p.get('seed', '?')}"
         f" · bug fraction: {p.get('bug_fraction', '?')}",
         f"- Beliefs: **{report['beliefs']}** (fake = deterministic offline traders, not real LLM calls)",
-        "- Ground truth: each mutant's hidden test result (DECISIONS #68), for every market, merged or not.",
+        "- Ground truth: each mutant's hidden test result (DECISIONS #69), for every market, merged or not.",
         "",
     ]
     for subset, title in (("all", "All markets"), ("post_warmup", "After warm-up")):
