@@ -112,9 +112,14 @@ class MarketParams(_Strict):
     max_spend_fraction: float = Field(0.25, gt=0, le=1)
     max_spend_abs: float = Field(30.0, gt=0)
     min_traders: int = Field(2, ge=2)  # fewer than 2 responding traders always VOIDs (R-SM-2)
+    # Escalation rounds while the price sits in [human_review, auto_merge) (DECISIONS #28). 0 disables them.
+    max_escalations: int = Field(2, ge=0, le=5)
 
 
 class GateThresholds(_Strict):
+    """``auto_merge`` = A: merge at or above. ``human_review`` = B, the reject line: below it the PR is
+    blocked; between B and A the market escalates, then fails "no consensus" (DECISIONS #28, name kept)."""
+
     auto_merge: float = Field(0.90, gt=0, lt=1)
     human_review: float = Field(0.60, gt=0, lt=1)
 
