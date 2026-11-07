@@ -104,6 +104,29 @@ function verdictOf(m) {
   return null;
 }
 
+/** Split a unified diff into lines and count added/removed lines (file headers excluded). */
+export function parseDiff(text) {
+  const lines = String(text || "").split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  let add = 0;
+  let del = 0;
+  for (const l of lines) {
+    if (l.startsWith("+") && !l.startsWith("+++")) add += 1;
+    else if (l.startsWith("-") && !l.startsWith("---")) del += 1;
+  }
+  return { lines, add, del };
+}
+
+/** CSS class for one diff line: file, hunk, meta (---/+++), add, del, or "" for context. */
+export function diffLineClass(l) {
+  if (l.startsWith("diff --git")) return "file";
+  if (l.startsWith("@@")) return "hunk";
+  if (l.startsWith("+++") || l.startsWith("---")) return "meta";
+  if (l.startsWith("+")) return "add";
+  if (l.startsWith("-")) return "del";
+  return "";
+}
+
 export async function getJSON(url) {
   const res = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
   if (!res.ok) {

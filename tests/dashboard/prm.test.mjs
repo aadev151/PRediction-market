@@ -2,7 +2,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { fmtMs, fmtPrice, fmtUsd, githubUrl, marketLabel, marketStatus, safeHref } from "../../prm/dashboard/static/prm.js";
+import {
+  diffLineClass, fmtMs, fmtPrice, fmtUsd, githubUrl, marketLabel, marketStatus, parseDiff, safeHref,
+} from "../../prm/dashboard/static/prm.js";
 
 const base = { id: 1, repo: "acme/widgets", pr_number: 7, source: "github", escalations: 0, gate_description: null };
 const m = (over) => ({ ...base, ...over });
@@ -65,4 +67,13 @@ test("formatters", () => {
   assert.equal(fmtMs(850), "850 ms");
   assert.equal(fmtMs(2340), "2.3 s");
   assert.equal(fmtMs(0), "—");
+});
+
+test("diff parsing counts +/- lines but not file headers", () => {
+  const diff = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n ctx\n-old\n+new\n+more\n";
+  const { lines, add, del } = parseDiff(diff);
+  assert.deepEqual([lines.length, add, del], [8, 2, 1]);
+  assert.deepEqual(lines.map(diffLineClass), ["file", "meta", "meta", "hunk", "", "del", "add", "add"]);
+  assert.deepEqual(parseDiff(""), { lines: [], add: 0, del: 0 });
+  assert.deepEqual(parseDiff(null).lines, []);
 });
