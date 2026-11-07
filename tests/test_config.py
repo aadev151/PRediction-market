@@ -168,12 +168,18 @@ def test_postmerge_window_is_configurable():
     assert target("[postmerge]\nwindow_days = 30\n").postmerge.window_days == 30
 
 
+def test_hidden_test_source_is_optional_for_remote_targets():
+    # Settlement is post-merge (DECISIONS #57): a GitHub target's .prm.toml may name no hidden-test source.
+    cfg = parse_target_config(MINIMAL.replace('holdouts_repo = "o/r"', ""))
+    assert cfg.target.holdouts_repo is None and cfg.target.holdouts_path is None
+    assert cfg.holdouts_dir(Path("/x")) is None
+
+
 @pytest.mark.parametrize(
     "toml",
     [
         MINIMAL + "surprise = 1\n",  # unknown key in [settle]
         MINIMAL + "[extra]\na = 1\n",  # unknown section
-        MINIMAL.replace('holdouts_repo = "o/r"', ""),  # no holdouts source
         MINIMAL.replace('holdouts_repo = "o/r"', 'holdouts_repo = "o/r"\nholdouts_path = "../h"'),  # both
         MINIMAL.replace('"o/r"', '"not-a-repo"'),
         MINIMAL.replace('"o/r"', '"o/.."'),
