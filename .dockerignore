@@ -1,0 +1,36 @@
+# Keep secrets, local state and dev-only trees out of the build context and the image.
+# secrets
+.env
+.env.*
+!.env.example
+*_TOKEN*
+*_SECRET*
+# private league ground truth, caches, local databases
+.league/
+.prm-cache/
+*.db
+*.db-journal
+# vcs, worktrees, envs, caches
+.git/
+.worktrees/
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+.mypy_cache/
+.coverage
+.DS_Store
+# dev-only: the factory never imports examples/ (fixture target + fixture holdouts), tests or tooling
+examples/
+tests/
+scripts/
+docs/
+.github/
+.githooks/
+.claude/
+.semgrep/
