@@ -4,11 +4,14 @@ BIN    := $(VENV)/bin
 PY     := $(BIN)/python
 SAMPLE := examples/sample-target
 
-.PHONY: setup dev test lint fmt check smoke-llm settle-sample league-sample demo-bug-local demo-good-local demo-reset tunnel
+.PHONY: setup hooks dev test lint fmt check smoke-llm settle-sample league-sample demo-bug-local demo-good-local demo-reset tunnel
 
-setup:            ## create .venv (Python 3.12) and install prm + dev deps
+setup: hooks      ## create .venv (Python 3.12), install prm + dev deps, enable git hooks
 	uv venv --python 3.12 $(VENV)
 	uv pip install --python $(PY) -e ".[dev]"
+
+hooks:            ## enable the repo's git hooks (no commits/pushes to main)
+	git config core.hooksPath .githooks
 
 dev:              ## (WP E) run the server with the fake LLM
 	PRM_FAKE_LLM=1 $(BIN)/prm serve --reload

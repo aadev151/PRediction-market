@@ -1,0 +1,13 @@
+#!/bin/sh
+# Repo rule (enforced): never push to main. Push your branch and open a PR.
+# stdin lines: <local ref> <local sha> <remote ref> <remote sha>
+while read -r local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main|refs/heads/master)
+      echo "pre-push: pushing to '${remote_ref#refs/heads/}' is not allowed." >&2
+      echo "  Push your branch (git push -u origin HEAD) and open a PR." >&2
+      exit 1
+      ;;
+  esac
+done
+exit 0

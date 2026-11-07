@@ -65,9 +65,12 @@ Before every PR: `ruff check . && ruff format --check . && pytest -q`.
 - **`docs/DECISIONS.md`**: one line per non-trivial choice (what, why).
 - **`docs/AI_LOG.md`**: one line per AI mistake a human caught (wrong SDK shapes, weakened tests, hallucinated calls, scope drift…).
 
-## Git workflow
+## Git workflow (enforced)
 
 - **Never commit or push to `main`.** `main` is protected; changes land only through a PR.
+  Enforced by `.githooks/` (git refuses commits on main and pushes to main; `make setup`/`make hooks`, and
+  a Claude Code SessionStart hook, enable them), by `scripts/git_guard.py` (a PreToolUse hook that also blocks
+  `--no-verify` and changing `core.hooksPath`), and by GitHub branch protection. Don't try to work around them.
 - Work in your own branch (ideally in your own git worktree), named after the work package: `wp-<letter>/<short-topic>`,
   e.g. `wp-a/lmsr`, `wp-b/signals`, `wp-h/ci-semgrep`. Branch from an up-to-date `main`.
 - Push your branch and open a PR to `main`. CI (`ci` job) must be green before merge.
@@ -77,9 +80,10 @@ Before every PR: `ruff check . && ruff format --check . && pytest -q`.
 Use `.github/pull_request_template.md`: **What** (one concern, which WP) / **Why** (requirement id) / **Tests** / **Risk**.
 Small commits, one concern per PR, under 300 changed lines where practical, with tests.
 
-## After each feature: TL;DR summary (required)
+## After each feature: TL;DR summary (required, enforced)
 
-When a feature is complete, end your report to the human with this summary, in plain language:
+When a feature is complete, end your report to the human with this summary, in plain language.
+`scripts/tldr_check.py` (a Stop hook) sends you back to write it if a turn committed or pushed without one.
 
 **TL;DR**
 - **What this feature is about:** the problem it solves, in a sentence or two.

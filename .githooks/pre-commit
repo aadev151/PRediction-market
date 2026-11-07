@@ -1,0 +1,12 @@
+#!/bin/sh
+# Repo rule (enforced): never commit on main. Work on a branch and open a PR.
+# Activated by `make setup` / `make hooks` (git config core.hooksPath .githooks).
+branch=$(git symbolic-ref --short -q HEAD)
+case "$branch" in
+  main|master)
+    echo "pre-commit: committing on '$branch' is not allowed." >&2
+    echo "  Create a branch first: git switch -c wp-<letter>/<topic>" >&2
+    exit 1
+    ;;
+esac
+exit 0

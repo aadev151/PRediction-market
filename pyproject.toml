@@ -43,7 +43,9 @@ select = ["E", "F", "I", "B", "UP", "S"]
 
 [tool.ruff.lint.per-file-ignores]
 # Tests and fixtures assert, and use obviously fake tokens.
-"tests/**" = ["S101", "S105", "S106", "S108"]
+"tests/**" = ["S101", "S105", "S106", "S108", "S603", "S607"]
+# Claude Code / git hook scripts call git via subprocess with fixed argv (no shell).
+"scripts/**" = ["S603", "S607"]
 "examples/**" = ["S101", "S105", "S106"]
 
 [tool.pytest.ini_options]
