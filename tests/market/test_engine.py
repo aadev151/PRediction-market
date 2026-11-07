@@ -1,15 +1,24 @@
 """MarketEngine invariants (PLAN §6.8; R-MKT-2..4, R-SM-1, R-SM-2). The /how page links to these by name."""
 
+import asyncio
 import random
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 
 from prm.config import ServerConfig, TargetGateOverrides, TraderSpec, parse_target_config
 from prm.db import make_session_factory
-from prm.market.engine import VOID_DESCRIPTION, MarketEngine, TradeRejected
+from prm.market.engine import (
+    MAX_ATTEMPTS,
+    VOID_DESCRIPTION,
+    MarketAttemptsExhausted,
+    MarketEngine,
+    TradeConflict,
+    TradeRejected,
+)
 from prm.market.state import IllegalAction, IllegalTransition
 from prm.models import Belief, Event, Market, Trade, Trader
 from prm.types import BeliefResult, Finding, PRBundle, SettlementResult, State
@@ -24,7 +33,7 @@ NO = SettlementResult("NO", 3, 5, [], 10, None)
 
 
 class Stub:
-    """BeliefProvider: a float is a belief, None abstains, an exception is raised."""
+    """BeliefProvider: a float is a belief, None abstains, an exception is raised, "hang" never returns."""
 
     def __init__(self, beliefs):
         self.beliefs = beliefs
@@ -33,6 +42,8 @@ class Stub:
         v = self.beliefs.get(spec.name)
         if isinstance(v, Exception):
             raise v
+        if v == "hang":
+            await asyncio.Event().wait()
         if v is None:
             return BeliefResult(spec.name, None, "", [], spec.model, 0, 0, 0, 0.0, "timeout")
         latency = 40 + len(spec.name)
@@ -47,9 +58,22 @@ def bundle(pr: int = 1, sha: str = "abc", repo: str = "acme/widgets") -> PRBundl
     return PRBundle("github", repo, pr, sha, "base", "diff --git a b", "desc", Path("."), Path("."), TARGET)
 
 
-def make(llm, seed: int = 7, cfg: ServerConfig | None = None) -> MarketEngine:
+def make(llm, seed: int = 7, cfg: ServerConfig | None = None, url: str = "sqlite://", **kw) -> MarketEngine:
     rng = random.Random(seed)  # noqa: S311 - deterministic trade order, not security
-    return MarketEngine(make_session_factory("sqlite://"), cfg or ServerConfig(), llm, lambda: NOW, rng)
+    return MarketEngine(make_session_factory(url), cfg or ServerConfig(), llm, lambda: NOW, rng, **kw)
+
+
+def file_url(tmp_path) -> str:
+    """Race tests need real separate connections (in-memory StaticPool shares one)."""
+    return f"sqlite:///{tmp_path / 'engine.db'}"
+
+
+def add_judge(engine) -> int:
+    with engine._sf.begin() as s:
+        judge = Trader(repo_id=None, name="judge", kind="human", model=None, bankroll=100.0)
+        s.add(judge)
+        s.flush()
+        return judge.id
 
 
 async def run(engine: MarketEngine, b: PRBundle | None = None) -> int:
@@ -297,9 +321,145 @@ async def test_deterministic_with_seeded_rng():
     assert fingerprint(e1, await run(e1)) == fingerprint(e2, await run(e2))
 
 
-def test_create_is_idempotent_per_pr_head_and_source():
+def test_create_is_idempotent_per_pr_head_and_source_while_market_is_live():
     e = make(beliefs(0.9, 0.9, 0.9, 0.9))
     rid = e.ensure_repo("acme/widgets")
     assert e.create(rid, bundle()) == e.create(rid, bundle())
     assert e.create(rid, bundle(sha="def")) != e.create(rid, bundle())
     assert e.ensure_repo("acme/widgets") == rid
+
+
+# ------------------------------------------------------------------------------ code-review regressions
+
+
+async def test_concurrent_settle_pays_exactly_once(tmp_path, monkeypatch):
+    """Two settles both read GATED; the loser's stale write rolls back and it returns the stored payouts."""
+    e = make(beliefs(0.95, 0.9, 0.3, 0.2), url=file_url(tmp_path))
+    mid = await run(e)
+    e.close(mid)
+    e.gate(mid, None)
+    before = bankrolls(e)
+    orig_move, started, raced = e._move, [], []
+
+    def racing_move(s, m, to, detail=""):
+        if to == State.SETTLING and not started:
+            started.append(True)
+            raced.append(e.settle(mid, NO))  # a second request settles while this one holds a GATED read
+        orig_move(s, m, to, detail)
+
+    monkeypatch.setattr(e, "_move", racing_move)
+    payouts = e.settle(mid, NO)
+    assert raced and payouts == raced[0] and sum(payouts.values()) > 0
+    assert bankrolls(e) == pytest.approx({n: before[n] + payouts[n] for n in ROLES})
+    with e._sf() as s:
+        assert s.query(Event).filter_by(market_id=mid, to_state="SETTLED").count() == 1
+
+
+async def test_concurrent_human_trades_conflict_instead_of_losing_a_debit(tmp_path, monkeypatch):
+    e = make(beliefs(0.6, 0.6, 0.6, 0.6), url=file_url(tmp_path))
+    mid = await run(e)
+    e.open_human_window(mid)
+    jid = add_judge(e)
+    orig_trade = e._trade
+
+    def racing_trade(*args):
+        with e._sf.begin() as other:  # another request debits the same judge first
+            other.get(Trader, jid).bankroll -= 10.0
+        return orig_trade(*args)
+
+    monkeypatch.setattr(e, "_trade", racing_trade)
+    with pytest.raises(TradeConflict):
+        e.human_trade(mid, jid, "YES", 5.0)
+    with e._sf() as s:
+        assert s.get(Trader, jid).bankroll == pytest.approx(90.0)  # the other debit kept, ours rolled back
+        assert s.query(Trade).filter_by(trader_id=jid).count() == 0
+    assert market(e, mid).state == State.HUMAN_WINDOW
+
+
+async def test_create_after_void_opens_a_fresh_attempt():
+    e = make(beliefs(0.9, 0.9, 0.9, 0.9))
+    rid = e.ensure_repo("acme/widgets")
+    first = e.create(rid, bundle())
+    e.void(first, "infra")
+    second = e.create(rid, bundle())
+    assert second != first
+    m = market(e, second)
+    assert (m.state, m.attempt) == (State.CONTEXT_READY, 2)
+    await e.run_agents(second, bundle())  # the retried market really trades
+    assert market(e, second).state == State.TRADING
+
+
+async def test_create_on_a_settled_market_returns_the_same_market():
+    e = make(beliefs(0.95, 0.9, 0.3, 0.2))
+    mid = await run(e)
+    e.close(mid)
+    e.gate(mid, None)
+    e.settle(mid, YES)
+    assert e.create(market(e, mid).repo_id, bundle()) == mid
+
+
+def test_create_gives_up_after_max_attempts():
+    e = make(beliefs(0.9, 0.9, 0.9, 0.9))
+    rid = e.ensure_repo("acme/widgets")
+    for _ in range(MAX_ATTEMPTS):
+        e.void(e.create(rid, bundle()), "infra")
+    with pytest.raises(MarketAttemptsExhausted):
+        e.create(rid, bundle())
+
+
+async def test_hung_provider_times_out_and_abstains_while_others_trade():
+    e = make(beliefs("hang", 0.9, 0.8, 0.85), belief_timeout_s=0.05)
+    mid = await asyncio.wait_for(run(e), 5)
+    assert market(e, mid).state == State.TRADING and trades(e, mid)
+    with e._sf() as s:
+        assert [b.error for b in s.scalars(select(Belief).where(Belief.p_yes.is_(None)))] == ["TimeoutError"]
+
+
+async def test_hung_providers_below_min_traders_void():
+    e = make(beliefs("hang", "hang", "hang", 0.9), belief_timeout_s=0.05)
+    mid = await asyncio.wait_for(run(e), 5)
+    assert market(e, mid).state == State.VOID
+
+
+async def test_human_trade_db_error_never_voids_the_market(monkeypatch):
+    e = make(beliefs(0.6, 0.6, 0.6, 0.6))
+    mid = await run(e)
+    e.open_human_window(mid)
+    jid = add_judge(e)
+
+    def db_down(*_a, **_k):
+        raise OperationalError("UPDATE traders", {}, Exception("database is locked"))
+
+    monkeypatch.setattr(e, "_trade", db_down)
+    with pytest.raises(OperationalError):
+        e.human_trade(mid, jid, "YES", 5.0)
+    assert market(e, mid).state == State.HUMAN_WINDOW
+    with e._sf() as s:
+        assert s.get(Trader, jid).bankroll == 100.0
+
+
+async def test_gate_is_idempotent_once_gated_settling_or_settled():
+    e = make(beliefs(0.75, 0.75, 0.75, 0.75))
+    mid = await run(e)
+    e.close(mid)
+    first = e.gate(mid, None)
+    assert first.state == "pending"
+    assert e.gate(mid, None) == first
+    assert e.gate(mid, TargetGateOverrides(human_review=0.8)) == first  # stored, not recomputed
+    e.settle(mid, YES)
+    assert e.gate(mid, None) == first
+    assert market(e, mid).state == State.SETTLED
+
+
+async def test_gate_returns_failure_even_if_voiding_also_fails(monkeypatch):
+    e = make(beliefs(0.95, 0.95, 0.95, 0.95))
+    mid = await run(e)
+    e.close(mid)
+
+    def boom(*_a, **_k):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(e, "_move", boom)
+    monkeypatch.setattr(e, "void", boom)
+    d = e.gate(mid, None)
+    assert (d.state, d.price) == ("failure", None)
