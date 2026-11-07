@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PRediction Market · League</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600;700;800&display=swap">
+  <link rel="stylesheet" href="/static/prm.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" integrity="sha512-CQBWl4fJHWbryGE+Pc7UAxWMUMNMWzWxF4SQo9CgkJIN1kx6djDQZjh3Y8SZ1d+6I+1zze6Z7kHXO7q3UyZAWw==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script type="module" src="/static/league.js"></script>
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="/"><b>PR</b>ediction market</a>
+    <nav class="nav" aria-label="Pages">
+      <a href="/">Andon</a>
+      <a href="/league" aria-current="page">League</a>
+      <a href="/how">How it works</a>
+    </nav>
+    <span id="live" class="live" role="status">connecting…</span>
+  </header>
+  <main>
+    <section>
+      <h1>League</h1>
+      <p id="summary" class="muted"></p>
+    </section>
+    <div id="empty" hidden></div>
+    <div id="report" hidden>
+      <section class="kpis" id="kpis" aria-label="Headline numbers"></section>
+      <section class="card">
+        <div class="toolbar">
+          <h2>Brier score by method</h2>
+          <div class="seg" role="group" aria-label="Which markets">
+            <button type="button" id="seg-all" aria-pressed="true">all markets</button>
+            <button type="button" id="seg-post" aria-pressed="false">after warm-up</button>
+          </div>
+        </div>
+        <div id="scores" class="scroll-x"></div>
+        <p class="muted small">Brier = mean squared error of the probability vs. the outcome (0 is perfect, 0.25 is a coin flip).
+          Brackets are bootstrap 95% confidence intervals. "Best single trader" is picked after the fact, and the base rate
+          uses this run's own outcomes, so both are optimistic baselines.</p>
+      </section>
+      <div class="two-col">
+        <section class="card">
+          <h2>Calibration</h2>
+          <div class="chart-box square"><canvas id="calibration" role="img" aria-label="Calibration: mean market price vs. observed YES rate per price bin, sized by n"></canvas></div>
+          <p class="muted small">Each bubble is a 0.1-wide price bin, sized by how many markets fell in it. On the dashed diagonal,
+            "0.8" really means 80%.</p>
+        </section>
+        <section class="card">
+          <h2>Trader bankrolls</h2>
+          <div class="chart-box square"><canvas id="bankrolls" role="img" aria-label="Each trader's bankroll after each market"></canvas></div>
+          <p class="muted small">Proper scoring pays traders who are right <em>and</em> calibrated. Every trader starts at the same bankroll.</p>
+        </section>
+      </div>
+      <section class="card">
+        <h2>Gate economics</h2>
+        <div id="gate" class="scroll-x"></div>
+        <p id="engine" class="muted small"></p>
+      </section>
+      <div class="two-col">
+        <section class="card">
+          <h2>Mutation label vs. outcome</h2>
+          <div id="confusion" class="scroll-x"></div>
+          <p class="muted small">Counts only. A "bug" mutant that still passed shows a gap in the test coverage, not a market error.</p>
+        </section>
+        <section class="card">
+          <h2>Cost</h2>
+          <div id="cost"></div>
+        </section>
+      </div>
+    </div>
+  </main>
+</body>
+</html>

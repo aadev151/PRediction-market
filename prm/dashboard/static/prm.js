@@ -127,6 +127,50 @@ export function diffLineClass(l) {
   return "";
 }
 
+// ------------------------------------------------------------------- league report (aggregates only)
+
+export const METHODS = [
+  ["market", "Market (closing price)"],
+  ["average", "Simple average of beliefs"],
+  ["majority_vote", "Majority vote"],
+  ["best_single", "Best single trader"],
+  ["base_rate", "Base rate"],
+];
+
+/** One row per forecasting method, in a fixed order; methods missing from the report are skipped. */
+export function methodRows(scores) {
+  return METHODS.filter(([key]) => scores && scores[key]).map(([key, label]) => {
+    const s = scores[key];
+    const notes = [];
+    if (s.trader) notes.push(s.trader);
+    if (typeof s.rate === "number") notes.push(`rate ${s.rate.toFixed(2)}`);
+    if (s.flag) notes.push(s.flag);
+    return {
+      key, label, n: s.n ?? 0, brier: s.brier, brierCi: s.brier_ci, logLoss: s.log_loss, logLossCi: s.log_loss_ci,
+      note: notes.join(" · "),
+    };
+  });
+}
+
+/** Calibration bins with data, as bubble points: x = mean price, y = observed YES rate, radius grows with n. */
+export function calibrationPoints(bins) {
+  const full = (bins || []).filter((b) => b.n > 0 && typeof b.mean_p === "number" && typeof b.observed === "number");
+  const maxN = Math.max(1, ...full.map((b) => b.n));
+  return full.map((b) => ({ x: b.mean_p, y: b.observed, n: b.n, r: Math.round(4 + 14 * Math.sqrt(b.n / maxN)) }));
+}
+
+export function fmtPct(x) {
+  return typeof x === "number" && Number.isFinite(x) ? `${x.toFixed(1)}%` : "—";
+}
+
+export function fmtNum(x, digits = 3) {
+  return typeof x === "number" && Number.isFinite(x) ? x.toFixed(digits) : "—";
+}
+
+export function fmtCi(ci, digits = 3) {
+  return Array.isArray(ci) && ci.length === 2 ? `[${fmtNum(ci[0], digits)}, ${fmtNum(ci[1], digits)}]` : "—";
+}
+
 export async function getJSON(url) {
   const res = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
   if (!res.ok) {
@@ -138,7 +182,7 @@ export async function getJSON(url) {
 }
 
 /** Run `fn` now and every `ms` after it finishes; pause while the tab is hidden. Shows liveness in #live. */
-export function poll(fn, ms = POLL_MS) {
+export function poll(fn, ms = POLL_MS, liveText = "live") {
   let timer = null;
   const live = document.getElementById("live");
   async function tick() {
@@ -147,7 +191,7 @@ export function poll(fn, ms = POLL_MS) {
       await fn();
       if (live) {
         live.className = "live ok";
-        live.textContent = `live · ${new Date().toLocaleTimeString()}`;
+        live.textContent = `${liveText} · ${new Date().toLocaleTimeString()}`;
       }
     } catch (err) {
       if (live) {
