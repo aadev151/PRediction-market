@@ -21,7 +21,7 @@ from prm.market.engine import (
 )
 from prm.market.state import IllegalAction, IllegalTransition
 from prm.models import Belief, Event, Market, Trade, Trader
-from prm.types import BeliefResult, Finding, PRBundle, SettlementResult, State
+from prm.types import BeliefResult, EscalationContext, Finding, PRBundle, SettlementResult, State
 
 TARGET = parse_target_config(
     '[target]\nname = "t"\nholdouts_repo = "o/h"\n[settle]\ncommand = "run {holdouts}"\n'
@@ -33,13 +33,24 @@ NO = SettlementResult("NO", 3, 5, [], 10, None)
 
 
 class Stub:
-    """BeliefProvider: a float is a belief, None abstains, an exception is raised, "hang" never returns."""
+    """BeliefProvider: a float is a belief, None abstains, an exception is raised, "hang" never returns.
 
-    def __init__(self, beliefs):
+    ``escalated`` overrides a trader's answer in escalation rounds (default: the same as its first belief).
+    Every call is recorded as (trader, EscalationContext | None).
+    """
+
+    def __init__(self, beliefs, escalated=None):
         self.beliefs = beliefs
+        self.escalated = escalated or {}
+        self.calls: list[tuple[str, EscalationContext | None]] = []
 
-    async def get_belief(self, spec: TraderSpec, bundle: PRBundle) -> BeliefResult:
+    async def get_belief(
+        self, spec: TraderSpec, bundle: PRBundle, escalation: EscalationContext | None = None
+    ) -> BeliefResult:
+        self.calls.append((spec.name, escalation))
         v = self.beliefs.get(spec.name)
+        if escalation is not None and spec.name in self.escalated:
+            v = self.escalated[spec.name]
         if isinstance(v, Exception):
             raise v
         if v == "hang":
@@ -47,15 +58,19 @@ class Stub:
         if v is None:
             return BeliefResult(spec.name, None, "", [], spec.model, 0, 0, 0, 0.0, "timeout")
         latency = 40 + len(spec.name)
-        return BeliefResult(spec.name, v, "why", ["risk"], spec.model, 100, 20, latency, 0.001, None)
+        return BeliefResult(
+            spec.name, v, f"why {spec.name}", ["risk"], spec.model, 100, 20, latency, 0.001, None
+        )
 
 
 def beliefs(*values):
     return Stub(dict(zip(ROLES, values, strict=True)))
 
 
-def bundle(pr: int = 1, sha: str = "abc", repo: str = "acme/widgets") -> PRBundle:
-    return PRBundle("github", repo, pr, sha, "base", "diff --git a b", "desc", Path("."), Path("."), TARGET)
+def bundle(
+    pr: int = 1, sha: str = "abc", repo: str = "acme/widgets", source="github", target=TARGET
+) -> PRBundle:
+    return PRBundle(source, repo, pr, sha, "base", "diff --git a b", "desc", Path("."), Path("."), target)
 
 
 def make(llm, seed: int = 7, cfg: ServerConfig | None = None, url: str = "sqlite://", **kw) -> MarketEngine:
@@ -138,7 +153,7 @@ async def test_every_trade_is_logged_in_trades_and_events():
     assert {ev.actor for ev in trade_events} <= set(ROLES)
 
 
-@pytest.mark.parametrize(("p_yes", "state", "label"), [(0.75, "pending", "needs 1 human review"),
+@pytest.mark.parametrize(("p_yes", "state", "label"), [(0.75, "failure", "no consensus"),
                                                        (0.2, "failure", "blocked")])  # fmt: skip
 async def test_gate_thresholds(p_yes, state, label):
     e = make(beliefs(p_yes, p_yes, p_yes, p_yes))
@@ -158,6 +173,7 @@ async def test_no_single_trader_can_force_auto_merge():
     mid = e.create(rid, bundle())
     await e.run_agents(mid, bundle())
     ts = trades(e, mid)
+    assert market(e, mid).escalations == 2  # in band, so it escalated: caps are cumulative across escalations
     assert ts and all(t.price_after < 0.9 for t in ts)
     assert sum(t.cost for t in ts) <= 30.0 + 1e-9
     assert sum(t.cost for t in ts) == pytest.approx(30.0)  # spent its whole max_spend_abs
@@ -208,13 +224,14 @@ async def test_unexpected_engine_error_voids_market_fail_closed(monkeypatch):
 
 
 async def test_payouts_happen_exactly_once():
-    e = make(beliefs(0.95, 0.9, 0.3, 0.2))
+    e = make(beliefs(0.95, 0.95, 0.95, 0.95))
     mid = await run(e)
     e.close(mid)
-    e.gate(mid, None)
-    first = e.settle(mid, NO)
+    assert e.gate(mid, None).state == "success"  # only merged markets pay out
+    first = e.settle(mid, YES)
+    assert sum(first.values()) > 0
     after_first = bankrolls(e)
-    second = e.settle(mid, NO)
+    second = e.settle(mid, YES)
     assert second == first
     assert bankrolls(e) == after_first
     e.void(mid, "late void")  # terminal: no-op, no refund
@@ -334,7 +351,7 @@ def test_create_is_idempotent_per_pr_head_and_source_while_market_is_live():
 
 async def test_concurrent_settle_pays_exactly_once(tmp_path, monkeypatch):
     """Two settles both read GATED; the loser's stale write rolls back and it returns the stored payouts."""
-    e = make(beliefs(0.95, 0.9, 0.3, 0.2), url=file_url(tmp_path))
+    e = make(beliefs(0.95, 0.95, 0.95, 0.95), url=file_url(tmp_path))
     mid = await run(e)
     e.close(mid)
     e.gate(mid, None)
@@ -344,11 +361,11 @@ async def test_concurrent_settle_pays_exactly_once(tmp_path, monkeypatch):
     def racing_move(s, m, to, detail=""):
         if to == State.SETTLING and not started:
             started.append(True)
-            raced.append(e.settle(mid, NO))  # a second request settles while this one holds a GATED read
+            raced.append(e.settle(mid, YES))  # a second request settles while this one holds a GATED read
         orig_move(s, m, to, detail)
 
     monkeypatch.setattr(e, "_move", racing_move)
-    payouts = e.settle(mid, NO)
+    payouts = e.settle(mid, YES)
     assert raced and payouts == raced[0] and sum(payouts.values()) > 0
     assert bankrolls(e) == pytest.approx({n: before[n] + payouts[n] for n in ROLES})
     with e._sf() as s:
@@ -390,7 +407,7 @@ async def test_create_after_void_opens_a_fresh_attempt():
 
 
 async def test_create_on_a_settled_market_returns_the_same_market():
-    e = make(beliefs(0.95, 0.9, 0.3, 0.2))
+    e = make(beliefs(0.95, 0.95, 0.95, 0.95))
     mid = await run(e)
     e.close(mid)
     e.gate(mid, None)
@@ -412,7 +429,9 @@ async def test_hung_provider_times_out_and_abstains_while_others_trade():
     mid = await asyncio.wait_for(run(e), 5)
     assert market(e, mid).state == State.TRADING and trades(e, mid)
     with e._sf() as s:
-        assert [b.error for b in s.scalars(select(Belief).where(Belief.p_yes.is_(None)))] == ["TimeoutError"]
+        abstained = list(s.scalars(select(Belief).where(Belief.p_yes.is_(None))))
+    assert [(b.trader_id, b.error) for b in abstained if b.escalation == 0] == [(1, "TimeoutError")]
+    assert {b.error for b in abstained} == {"TimeoutError"}  # it hangs again in any escalation round
 
 
 async def test_hung_providers_below_min_traders_void():
@@ -443,12 +462,12 @@ async def test_gate_is_idempotent_once_gated_settling_or_settled():
     mid = await run(e)
     e.close(mid)
     first = e.gate(mid, None)
-    assert first.state == "pending"
+    assert (first.state, first.description[:12]) == ("failure", "no consensus")
     assert e.gate(mid, None) == first
     assert e.gate(mid, TargetGateOverrides(human_review=0.8)) == first  # stored, not recomputed
     e.settle(mid, YES)
+    assert market(e, mid).state == State.VOID  # rejected -> refunded, and the gate is kept
     assert e.gate(mid, None) == first
-    assert market(e, mid).state == State.SETTLED
 
 
 async def test_gate_returns_failure_even_if_voiding_also_fails(monkeypatch):
@@ -463,3 +482,174 @@ async def test_gate_returns_failure_even_if_voiding_also_fails(monkeypatch):
     monkeypatch.setattr(e, "void", boom)
     d = e.gate(mid, None)
     assert (d.state, d.price) == ("failure", None)
+
+
+# ----------------------------------------------- escalation and refunds (DECISIONS #26-29, R-GATE-1, R-MKT-4)
+
+
+def events(engine, mid) -> list[Event]:
+    with engine._sf() as s:
+        return list(s.scalars(select(Event).where(Event.market_id == mid).order_by(Event.id)))
+
+
+async def test_in_band_price_escalates_then_fails_no_consensus():
+    llm = beliefs(0.75, 0.75, 0.75, 0.75)
+    e = make(llm)
+    mid = await run(e)
+    m = market(e, mid)
+    assert m.state == State.TRADING and m.escalations == 2
+    assert len(llm.calls) == 4 * 3  # one belief per trader per phase
+    escalation_events = [
+        ev.detail[:16] for ev in events(e, mid) if ev.actor == "engine" and ev.detail[:4] == "esca"
+    ]
+    assert escalation_events == ["escalation 1/2 (", "escalation 2/2 ("]
+    with e._sf() as s:
+        assert sorted({b.escalation for b in s.scalars(select(Belief))}) == [0, 1, 2]
+    assert m.cost_usd == pytest.approx(12 * 0.001)  # R-TRD-5: escalation calls are costed too
+    assert m.latency_ms == 3 * (40 + len("diff_reader"))  # phases run one after another
+    p = e.close(mid)
+    d = e.gate(mid, None)
+    assert (d.state, d.description, d.price) == ("failure", f"no consensus (p={p:.2f})", p)
+
+
+async def test_escalation_can_resolve_to_auto_merge_and_calls_the_hook():
+    llm = Stub(dict.fromkeys(ROLES, 0.75), escalated=dict.fromkeys(ROLES, 0.98))
+    e = make(llm)
+    seen: list[tuple[int, int, float]] = []
+
+    async def hook(k, n, p):
+        seen.append((k, n, p))
+
+    b = bundle()
+    mid = e.create(e.ensure_repo(b.repo), b)
+    await e.run_agents(mid, b, on_escalation=hook)
+    assert [(k, n) for k, n, _ in seen] == [(1, 2)] and 0.6 <= seen[0][2] < 0.9
+    assert market(e, mid).escalations == 1  # the price left the band, so no second round
+    assert any(t.escalation == 1 for t in trades(e, mid))
+    e.close(mid)
+    assert e.gate(mid, None).state == "success"
+
+
+async def test_escalation_shows_peers_rationales_and_the_price_never_their_numbers():
+    llm = beliefs(0.75, 0.7, 0.8, 0.72)
+    e = make(llm)
+    await run(e)
+    ctxs = [(name, c) for name, c in llm.calls if c is not None and c.round == 1]
+    assert [name for name, _ in ctxs] == list(ROLES)
+    for name, c in ctxs:
+        assert [pv.trader for pv in c.peers] == [r for r in ROLES if r != name]
+        assert [pv.rationale for pv in c.peers] == [f"why {r}" for r in ROLES if r != name]
+        assert c.previous_rationale == f"why {name}" and c.previous_p_yes is not None
+        assert not hasattr(c.peers[0], "p_yes")
+        assert c.max_rounds == 2 and 0.6 <= c.price < 0.9
+
+
+async def test_no_escalation_outside_the_band():
+    for p_yes in (0.95, 0.2):
+        llm = beliefs(p_yes, p_yes, p_yes, p_yes)
+        e = make(llm)
+        mid = await run(e)
+        assert market(e, mid).escalations == 0 and len(llm.calls) == 4
+
+
+async def test_max_escalations_zero_disables_escalation():
+    llm = beliefs(0.75, 0.75, 0.75, 0.75)
+    e = make(llm, cfg=ServerConfig(market={"max_escalations": 0}))
+    mid = await run(e)
+    assert market(e, mid).escalations == 0 and len(llm.calls) == 4
+    e.close(mid)
+    assert e.gate(mid, None).description.startswith("no consensus")
+
+
+async def test_escalation_band_comes_from_the_target_gate():
+    """The band is the base-branch .prm.toml's gate: with B = 0.80 a 0.75 market is simply blocked."""
+    strict = parse_target_config(
+        '[target]\nname = "t"\nholdouts_repo = "o/h"\n[settle]\ncommand = "run {holdouts}"\n'
+        "[gate]\nhuman_review = 0.80\n"
+    )
+    llm = beliefs(0.75, 0.75, 0.75, 0.75)
+    e = make(llm)
+    mid = await run(e, bundle(target=strict))
+    assert market(e, mid).escalations == 0
+    e.close(mid)
+    assert e.gate(mid, strict.gate).description.startswith("blocked")
+
+
+async def test_escalation_with_fewer_than_two_responders_voids():
+    e = make(Stub(dict.fromkeys(ROLES, 0.75), escalated={"diff_reader": 0.8, "coverage": None,
+                                                           "security": None, "skeptic": None}))  # fmt: skip
+    mid = await run(e)
+    m = market(e, mid)
+    assert m.state == State.VOID and m.gate_description == VOID_DESCRIPTION and m.resolution == "void"
+    assert set(bankrolls(e).values()) == {100.0}
+
+
+async def test_provider_without_escalation_support_abstains_and_fails_closed():
+    """A provider still on the old signature can't re-estimate: it abstains, and the market VOIDs."""
+
+    class Legacy:
+        async def get_belief(self, spec, bundle):
+            return BeliefResult(spec.name, 0.75, "r", [], spec.model, 0, 0, 0, 0.0, None)
+
+    e = make(Legacy())
+    mid = await run(e)
+    assert market(e, mid).state == State.VOID
+    with e._sf() as s:
+        assert {b.error for b in s.scalars(select(Belief).where(Belief.escalation == 1))} == {"TypeError"}
+
+
+async def test_blocked_market_runs_the_unpaid_check_then_refunds_everyone():
+    e = make(beliefs(0.2, 0.2, 0.2, 0.2))
+    mid = await run(e)
+    assert any(v < 100.0 for v in bankrolls(e).values())
+    e.close(mid)
+    blocked = e.gate(mid, None)
+    assert blocked.description.startswith("blocked")
+    assert e.settle(mid, NO) == {}
+    m = market(e, mid)
+    assert (m.state, m.resolution, m.outcome) == (State.VOID, "refunded", "NO")
+    assert (m.holdouts_passed, m.holdouts_total) == (3, 5)  # stored for Brier/calibration (R-LG-2)
+    assert bankrolls(e) == pytest.approx(dict.fromkeys(ROLES, 100.0))  # nobody profits from a rejection
+    assert e.gate(mid, None) == blocked  # the gate text survives the refund
+    assert e.status_description(mid) == f"{blocked.description} · refunded · holdouts agree"
+    last = events(e, mid)[-1]
+    assert (last.from_state, last.to_state) == ("GATED", "VOID") and "unpaid check" in last.detail
+    assert e.settle(mid, NO) == {} and bankrolls(e) == pytest.approx(dict.fromkeys(ROLES, 100.0))
+    assert e.create(m.repo_id, bundle()) == mid  # a rejection is final for this sha, not retried
+
+
+async def test_no_consensus_market_is_refunded_too():
+    e = make(beliefs(0.75, 0.75, 0.75, 0.75))
+    mid = await run(e)
+    e.close(mid)
+    e.gate(mid, None)
+    e.settle(mid, YES)
+    assert market(e, mid).resolution == "refunded"
+    assert bankrolls(e) == pytest.approx(dict.fromkeys(ROLES, 100.0))
+    assert e.status_description(mid).endswith("· refunded · holdouts disagree")
+
+
+async def test_demo_market_pays_out_even_when_blocked():
+    """Judge markets are a game, not a merge: they always settle on the outcome (R-UI-2)."""
+    e = make(beliefs(0.95, 0.9, 0.3, 0.2))
+    b = bundle(source="demo")
+    mid = await run(e, b)
+    e.close(mid)
+    assert e.gate(mid, None).state == "failure"
+    before = bankrolls(e)
+    payouts = e.settle(mid, NO)
+    assert market(e, mid).state == State.SETTLED and payouts["skeptic"] > 0
+    assert bankrolls(e)["skeptic"] == pytest.approx(before["skeptic"] + payouts["skeptic"])
+    assert e.status_description(mid).endswith("· settled NO · market right")
+
+
+@pytest.mark.parametrize(("result", "verdict"), [(YES, "market right"), (NO, "market wrong")])
+async def test_status_description_for_a_merged_market(result, verdict):
+    e = make(beliefs(0.95, 0.95, 0.95, 0.95))
+    mid = await run(e)
+    e.close(mid)
+    d = e.gate(mid, None)
+    assert e.status_description(mid) == d.description
+    e.settle(mid, result)
+    assert e.status_description(mid) == f"{d.description} · settled {result.outcome} · {verdict}"
+    assert market(e, mid).resolution == "paid"

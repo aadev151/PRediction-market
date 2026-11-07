@@ -72,6 +72,7 @@ def test_shipped_server_config_loads():
     assert cfg.trader("security").model == "claude-sonnet-5-5"
     assert cfg.market.b == 20.0 and cfg.gate.auto_merge == 0.90
     assert cfg.evolution.enabled is False
+    assert cfg.market.max_escalations == 2  # DECISIONS #28
 
 
 def test_defaults_match_shipped_file():
@@ -287,3 +288,10 @@ def test_runtime_env_from_values():
 def test_runtime_env_rejects_bad_sandbox():
     with pytest.raises(ConfigError):
         RuntimeEnv.from_env({"PRM_SANDBOX": "chroot"})
+
+
+@pytest.mark.parametrize("value", [-1, 6])
+def test_max_escalations_bounds(value):
+    with pytest.raises(ConfigError):
+        parse_server_config(f"[market]\nmax_escalations = {value}\n")
+    assert parse_server_config("[market]\nmax_escalations = 0\n").market.max_escalations == 0
