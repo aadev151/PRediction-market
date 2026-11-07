@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PRediction Market · Andon</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600;700;800&display=swap">
+  <link rel="stylesheet" href="/static/prm.css">
+  <script type="module" src="/static/andon.js"></script>
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="/"><b>PR</b>ediction market</a>
+    <nav class="nav" aria-label="Pages">
+      <a href="/" aria-current="page">Andon</a>
+      <a href="/league">League</a>
+      <a href="/how">How it works</a>
+    </nav>
+    <span id="live" class="live" role="status">connecting…</span>
+  </header>
+  <main>
+    <section class="kpis" id="kpis" aria-label="Key numbers"></section>
+    <section aria-labelledby="markets-h">
+      <div class="toolbar">
+        <h2 id="markets-h">Markets</h2>
+        <label class="muted" for="repo">repo</label>
+        <select id="repo"><option value="">all repos</option></select>
+        <span id="count" class="muted num"></span>
+      </div>
+      <div id="tiles" class="tiles" aria-live="polite"></div>
+    </section>
+  </main>
+</body>
+</html>

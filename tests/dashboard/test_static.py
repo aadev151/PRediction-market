@@ -15,7 +15,7 @@ from prm.config import RuntimeEnv, ServerConfig
 from prm.server import create_app
 
 STATIC = Path(__file__).resolve().parents[2] / "prm" / "dashboard" / "static"
-PAGES: dict[str, str] = {}  # route -> file; each page PR adds its row
+PAGES = {"/": "index.html"}  # route -> file; each page PR adds its row
 CDN_SCRIPT = re.compile(r"^https://cdnjs\.cloudflare\.com/ajax/libs/[\w.-]+/\d+\.\d+\.\d+/[\w./-]+\.js$")
 FONTS = "https://fonts.googleapis.com/"
 
