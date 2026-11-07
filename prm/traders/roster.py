@@ -19,7 +19,7 @@ from prm.traders.context import Evidence, build_context, gather_evidence
 from prm.traders.fake import FakeProvider
 from prm.traders.llm import LLMProvider
 from prm.traders.replay import ReplayProvider
-from prm.types import BeliefResult, PRBundle
+from prm.types import BeliefResult, EscalationContext, PRBundle
 
 
 def make_provider(cfg: ServerConfig, env: RuntimeEnv | None = None) -> BeliefProvider:
@@ -45,13 +45,20 @@ class EngineProvider:
             self._cached = (bundle, gather_evidence(bundle))
         return self._cached[1]
 
-    async def get_belief(self, spec: TraderSpec, bundle: PRBundle) -> BeliefResult:
+    async def get_belief(
+        self, spec: TraderSpec, bundle: PRBundle, escalation: EscalationContext | None = None
+    ) -> BeliefResult:
+        """Exactly the engine's ``BeliefProvider.get_belief`` (DECISIONS #39). Round 1: ``get_belief(spec,
+        bundle)``. Escalation round: ``get_belief(spec, bundle, escalation=EscalationContext(...))``."""
         try:
-            ctx = build_context(spec.name, bundle, self._evidence(bundle))
+            ctx = build_context(spec.name, bundle, self._evidence(bundle), escalation)
         except Exception as exc:  # fail closed: this trader abstains
             return abstain(spec.name, spec.model, f"context error: {type(exc).__name__}")
         try:
-            result = await self.provider.belief(spec, ctx, bundle)
+            if escalation is None:
+                result = await self.provider.belief(spec, ctx, bundle)
+            else:
+                result = await self.provider.belief(spec, ctx, bundle, escalation=escalation)
         except Exception as exc:  # a trader never raises
             return abstain(spec.name, spec.model, f"provider error: {type(exc).__name__}")
         if not isinstance(result, BeliefResult):

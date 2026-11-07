@@ -13,7 +13,7 @@ from prm.analysis.diffparse import parse_diff
 from prm.analysis.diffstats import compute_stats
 from prm.analysis.signals import compute_signals
 from prm.config import TraderSpec
-from prm.types import BELIEF_MAX, BELIEF_MIN, BeliefResult, PRBundle, TraderContext
+from prm.types import BELIEF_MAX, BELIEF_MIN, BeliefResult, EscalationContext, PRBundle, TraderContext
 
 FAKE_MODEL = "fake"
 
@@ -58,7 +58,17 @@ def fake_belief(trader: str, bundle: PRBundle) -> BeliefResult:
 
 
 class FakeProvider:
-    """Belief provider for tests, CI and offline demos. Never touches the network."""
+    """Belief provider for tests, CI and offline demos. Never touches the network.
 
-    async def belief(self, spec: TraderSpec, ctx: TraderContext, bundle: PRBundle) -> BeliefResult:
+    Escalation rounds return the same belief as round 1: the fake has no opinions to revise, which keeps
+    every market fully deterministic.
+    """
+
+    async def belief(
+        self,
+        spec: TraderSpec,
+        ctx: TraderContext,
+        bundle: PRBundle,
+        escalation: EscalationContext | None = None,
+    ) -> BeliefResult:
         return fake_belief(spec.name, bundle)

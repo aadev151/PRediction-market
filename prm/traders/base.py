@@ -5,15 +5,25 @@ from __future__ import annotations
 from typing import Protocol
 
 from prm.config import TraderSpec
-from prm.types import BeliefResult, PRBundle, TraderContext
+from prm.types import BeliefResult, EscalationContext, PRBundle, TraderContext
 
 ERROR_MAX = 300
 
 
 class BeliefProvider(Protocol):
-    """Turns one trader's context into a belief. Implementations never raise; they abstain."""
+    """Turns one trader's context into a belief. Implementations never raise; they abstain.
 
-    async def belief(self, spec: TraderSpec, ctx: TraderContext, bundle: PRBundle) -> BeliefResult: ...
+    ``escalation`` is set only in an escalation round (DECISIONS #28); ``ctx`` then already carries the peers'
+    rationales. Providers that don't care about it (fake, llm) just accept it.
+    """
+
+    async def belief(
+        self,
+        spec: TraderSpec,
+        ctx: TraderContext,
+        bundle: PRBundle,
+        escalation: EscalationContext | None = None,
+    ) -> BeliefResult: ...
 
 
 def abstain(trader: str, model: str, error: str, **usage: int | float) -> BeliefResult:

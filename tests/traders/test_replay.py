@@ -1,7 +1,7 @@
 from prm.config import TraderSpec
 from prm.traders.base import abstain
 from prm.traders.fake import FakeProvider, fake_belief
-from prm.traders.replay import ReplayProvider, append_beliefs, diff_key, load_beliefs
+from prm.traders.replay import ReplayProvider, append_beliefs, belief_key, load_beliefs
 from prm.types import BeliefResult, TraderContext
 
 SPEC = TraderSpec(name="security", model="claude-sonnet-5-5")
@@ -17,8 +17,8 @@ def test_roundtrip(tmp_path, bundle):
     append_beliefs(path, bundle.diff, [_belief(), abstain("coverage", "m", "timeout")])
     table, skipped = load_beliefs(path)
     assert skipped == 0
-    assert table[("security", diff_key(bundle.diff))] == _belief()
-    assert table[("coverage", diff_key(bundle.diff))].abstained
+    assert table[belief_key("security", bundle.diff)] == _belief()
+    assert table[belief_key("coverage", bundle.diff)].abstained
 
 
 def test_last_line_wins_and_bad_lines_are_skipped(tmp_path, bundle):
@@ -30,7 +30,7 @@ def test_last_line_wins_and_bad_lines_are_skipped(tmp_path, bundle):
         fh.write('{"trader": "x", "diff_sha256": "y", "p_yes": null}\n')  # abstain without an error
     table, skipped = load_beliefs(path)
     assert skipped == 3 and len(table) == 1
-    assert table[("security", diff_key(bundle.diff))].p_yes == 0.4
+    assert table[belief_key("security", bundle.diff)].p_yes == 0.4
 
 
 async def test_provider_hit_miss_and_fallback(tmp_path, bundle):

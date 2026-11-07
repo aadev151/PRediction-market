@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from prm.config import ServerConfig, TraderSpec
 from prm.traders.base import abstain
 from prm.traders.context import load_prompt
-from prm.types import BELIEF_MAX, BELIEF_MIN, BeliefResult, PRBundle, TraderContext
+from prm.types import BELIEF_MAX, BELIEF_MIN, BeliefResult, EscalationContext, PRBundle, TraderContext
 
 MAX_TOKENS = 4000
 TIMEOUT_S = 45.0
@@ -65,8 +65,14 @@ class LLMProvider:
             return 0.0
 
     async def belief(
-        self, spec: TraderSpec, ctx: TraderContext, bundle: PRBundle | None = None
+        self,
+        spec: TraderSpec,
+        ctx: TraderContext,
+        bundle: PRBundle | None = None,
+        escalation: EscalationContext | None = None,
     ) -> BeliefResult:
+        """One ``messages.parse`` call. In an escalation round ``ctx`` already holds the peers' rationales,
+        so the call is identical (no new SDK parameters)."""
         start = self._clock()
         try:
             if self._client is None:
