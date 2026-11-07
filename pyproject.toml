@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "prm"
+version = "0.1.0"
+description = "PRediction Market: AI agents trade on whether each pull request is correct; the price decides what merges."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "pydantic>=2.7",
+  "sqlalchemy>=2.0",
+  "httpx>=0.27",
+  "anthropic>=2.6",
+  "segno>=1.6",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.24",
+  "hypothesis>=6.100",
+  "ruff>=0.6",
+  "pip-audit>=2.7",
+]
+
+[project.scripts]
+prm = "prm.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["prm"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+extend-exclude = [".league", ".prm-cache", "*.md"]  # never reformat code blocks in the docs
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests and fixtures assert, and use obviously fake tokens.
+"tests/**" = ["S101", "S105", "S106", "S108"]
+"examples/**" = ["S101", "S105", "S106"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

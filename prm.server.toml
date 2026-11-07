@@ -1,0 +1,45 @@
+# PRM server config (PLAN §3.2). Validated by prm/config.py::ServerConfig; unknown keys are an error.
+# Invariant enforced at load: one trader's max spend can't move the price from initial_price to auto_merge.
+
+[market]
+b = 20.0
+initial_price = 0.5
+rounds = 3
+start_bankroll = 100.0
+max_spend_fraction = 0.25
+max_spend_abs = 30.0
+min_traders = 2
+
+[gate]
+auto_merge = 0.90
+human_review = 0.60
+
+[[traders]]
+name = "diff_reader"
+model = "claude-haiku-5-5"
+[[traders]]
+name = "coverage"
+model = "claude-haiku-5-5"
+[[traders]]
+name = "security"
+model = "claude-sonnet-5-5"
+[[traders]]
+name = "skeptic"
+model = "claude-haiku-5-5"
+
+[pricing_usd_per_mtok]          # [input, output]
+"claude-haiku-5-5" = [0.10, 0.50]
+"claude-sonnet-5-5" = [2.00, 10.00]
+"claude-opus-5-5" = [4.00, 20.00]
+
+[league]
+n = 120
+bug_fraction = 0.4
+concurrency = 8
+warmup = 40
+seed = 7
+
+[evolution]                     # P2 (PLAN §6.16), off by default
+enabled = false
+retire_below = 20.0
+max_generations = 3

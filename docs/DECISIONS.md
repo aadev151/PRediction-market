@@ -1,0 +1,20 @@
+# Decisions
+
+One line per non-trivial choice: what we decided and why. Append only. Newest at the bottom.
+
+| # | When | Decision | Why |
+|---|---|---|---|
+| 1 | 2026-11-07 12:00 | Build a **standalone, target-agnostic factory**; drop PLAN_V0's Crossroads app. | Software Factory is judged on "built to run again next month on a different problem". A `.prm.toml` plugs in any repo. |
+| 2 | 2026-11-07 12:00 | **LMSR** market maker, `b = 20`, start price 0.50, per-trader cap `min(25% bankroll, 30)`. | Closed-form prices, bounded maker loss (≤ b·ln2), and 0.50→0.90 costs b·ln5 ≈ 32.2 > 30, so no single trader can force an auto-merge. |
+| 3 | 2026-11-07 12:00 | `.prm.toml` is read from the PR's **base** sha, never the head. | A PR must not be able to rewrite its own gate or settle command. |
+| 4 | 2026-11-07 12:00 | **Fail closed**: any error or < 2 responding traders → VOID, refund, gate `failure`. | An engineer only trusts a gate that can't fail open into a merge. |
+| 5 | 2026-11-07 12:00 | Ground truth is the **settlement outcome**, not the mutation label; settle every market, auto-merged ones included. | Skipping settled-by-merge markets would bias calibration. Label/outcome mismatches reveal holdout gaps. |
+| 6 | 2026-11-07 12:00 | Agents only emit `{p_yes, rationale, key_risks}`; deterministic code owns trading, gating, settlement and transitions. | "Agents are suggestions, states are laws." Keeps every decision auditable and testable. |
+| 7 | 2026-11-07 12:20 | Python 3.12 via `uv`, hatchling build backend, ruff + pytest; pytest `--import-mode=importlib` with `testpaths = ["tests"]`. | macOS system python is 3.9. importlib mode lets `tests/` mirror `prm/` without basename clashes; `testpaths` keeps pytest from collecting the sample target's tests or fixture holdouts. |
+| 8 | 2026-11-07 12:20 | The **no-solo-auto-merge invariant is enforced at config load**: `ServerConfig` and `gate_for(overrides)` reject any market/gate config where one trader's `max_spend_abs` can move `initial_price` to `auto_merge` (or where markets would open at/above it). | R-MKT-3 holds for every configuration, not just the defaults. Consequence: a repo can't lower `auto_merge` below ~0.87 with default market params. |
+| 9 | 2026-11-07 12:20 | Remote `.prm.toml` (from GitHub) may **not** use `holdouts_path`; only local targets can (`parse_target_config(..., allow_holdouts_path=False)` by default). | A local path in a remote config would let any registered repo point the factory at arbitrary files on the server. |
+| 10 | 2026-11-07 12:20 | Commands are `shlex.split` **first**, then placeholders are filled per token; only `{head} {holdouts} {junit} {tmp}` (+ `{findings}` for red team) are allowed, plain names only. | Paths with spaces stay one argument, substituted values are never re-parsed, and nothing goes through a shell. Typos fail at load instead of at settlement. |
+| 11 | 2026-11-07 12:20 | `.prm.toml` must set **exactly one** of `holdouts_repo` / `holdouts_path`; `spec` must be a relative in-repo path; `HOME`/`TMPDIR` can't be overridden in `settle.env`; red-team commands must write to `{findings}`; configs over 64 KB are rejected. | Unambiguous, and keeps a target config from escaping the sandbox's isolation or reading outside its tree. |
+| 12 | 2026-11-07 12:20 | Shared dataclasses validate fail-closed rules in `__post_init__`: an abstaining belief must carry an error; a `GateDecision` without a price must be `failure`; `SettlementResult.outcome is None` exactly when `error` is set. | Makes "a missing number silently becomes a merge" unrepresentable. |
+| 13 | 2026-11-07 12:20 | Trader roster names are typed as the four roles (`diff_reader`, `coverage`, `security`, `skeptic`); evolution (P2) lineage names like `security.g2` live in the DB, not the config. | A misspelled role fails at load instead of silently getting no evidence slice. |
+| 14 | 2026-11-07 12:20 | Ruff excludes `*.md`. | Ruff's formatter reformatted the Python snippets inside PLAN.md; the docs are hand-written specs and must not change under a formatter. |

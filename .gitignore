@@ -1,0 +1,23 @@
+# secrets
+.env
+# private league ground truth and caches: never commit
+.league/
+.prm-cache/
+# local databases
+*.db
+*.db-journal
+# python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+# os / editors
+.DS_Store
+.idea/
+.vscode/

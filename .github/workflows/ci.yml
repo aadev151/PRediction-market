@@ -1,0 +1,28 @@
+# Minimal CI (Phase 0). WP H extends it with semgrep, gitleaks, pip-audit and the canary check (PLAN §8.3).
+# Never use pull_request_target.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: pytest -q
+        env:
+          PRM_FAKE_LLM: "1"
