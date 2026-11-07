@@ -1,4 +1,4 @@
-"""WP G. League ground truth: run the target's hidden tests on a mutant's tree (DECISIONS #66).
+"""WP G. League ground truth: run the target's hidden tests on a mutant's tree (DECISIONS #68).
 
 League mutants are never merged, so the post-merge oracle (#57) can't settle them. R-LG-2 scores every league
 market against its hidden test result instead, and this module is the only place that runs them.
