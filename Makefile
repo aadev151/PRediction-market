@@ -14,7 +14,7 @@ hooks:            ## enable the repo's git hooks (no commits/pushes to main)
 	git config core.hooksPath .githooks
 
 dev:              ## (WP E) run the server with the fake LLM
-	PRM_FAKE_LLM=1 $(BIN)/prm serve --reload
+	PRM_FAKE_LLM=1 PRM_DEMO_TARGET=$${PRM_DEMO_TARGET:-examples/sample-target} $(BIN)/prm serve --reload
 
 test:             ## run the test suite with the deterministic fake LLM
 	PRM_FAKE_LLM=1 $(BIN)/pytest -q
