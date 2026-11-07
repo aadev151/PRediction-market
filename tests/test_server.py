@@ -121,6 +121,7 @@ def test_every_route_declares_exactly_one_auth(app):
         ("POST", "/api/hooks/github"): github_hmac,
         ("POST", "/api/demo/markets"): admin_token,
         ("POST", "/api/demo/markets/{market_id}/close-and-settle"): admin_token,
+        ("POST", "/api/markets/{market_id}/fast-forward"): admin_token,
         ("GET", "/api/judges/me"): judge_cookie,
         ("POST", "/api/markets/{market_id}/human-trades"): judge_cookie,
     }

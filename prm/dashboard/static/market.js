@@ -3,6 +3,7 @@
 import {
   OPEN_STATES, diffLineClass, fmtMs, fmtPrice, fmtTime, fmtUsd, getJSON, githubUrl, h, marketLabel, marketStatus, parseDiff, poll, render,
 } from "./prm.js";
+import { renderFastForward } from "./fastforward.js";
 
 const id = Number((location.pathname.match(/^\/m\/(\d+)/) || [])[1]);
 const $ = (x) => document.getElementById(x);
@@ -166,6 +167,7 @@ async function refresh() {
   renderTrades(m);
   renderBeliefs(m);
   renderCards(m);
+  renderFastForward(m, refresh);
   if (m.diff_text !== lastDiff) renderDiff((lastDiff = m.diff_text));
   if (m.description_text !== lastDescription) {
     lastDescription = m.description_text;

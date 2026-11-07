@@ -12,6 +12,7 @@ settlement as counts only (holdouts passed/total, finding titles and severities)
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import io
@@ -41,20 +42,37 @@ from starlette.datastructures import MutableHeaders
 from starlette.routing import Mount
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from prm.config import RuntimeEnv, ServerConfig, load_server_config
+from prm.config import (
+    TARGET_CONFIG_FILENAME,
+    RuntimeEnv,
+    ServerConfig,
+    load_server_config,
+    parse_target_config,
+)
 from prm.db import init_db, make_engine, make_session_factory
 from prm.demo import DemoConflict, DemoUnavailable, JudgeDemo
-from prm.github.webhook import Deduper, classify_pr_event, valid_repo_name, verify_signature
+from prm.github.client import GitHubClient
+from prm.github.webhook import (
+    Deduper,
+    MergeEvent,
+    classify_merge_event,
+    classify_pr_event,
+    valid_repo_name,
+    verify_signature,
+)
 from prm.market import lmsr
 from prm.market.engine import MarketEngine, MarketNotFound, TradeConflict, TradeRejected
 from prm.market.state import IllegalAction
 from prm.models import Belief, Event, LeagueRun, Market, Position, Repo, Trade, Trader
-from prm.types import REVEAL_STATES, State
+from prm.settle.postmerge import DEFAULT_WINDOW_DAYS, MergedPR, window_end
+from prm.settle.repo import settle_merged
+from prm.types import REVEAL_STATES, SettlementResult, State
 
 log = logging.getLogger(__name__)
 access_log = logging.getLogger("prm.access")
 
 RunMarket = Callable[[str, int, str], Awaitable[object]]
+SettleMerged = Callable[..., SettlementResult | None]
 STATIC_DIR = Path(__file__).resolve().parent / "dashboard" / "static"
 CSP = (
     "default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com; "
@@ -359,6 +377,8 @@ def create_app(
     *,
     run_market: RunMarket | None = None,
     demo: JudgeDemo | None = None,
+    github: GitHubClient | None = None,
+    settle_fn: SettleMerged = settle_merged,
 ) -> FastAPI:
     env = RuntimeEnv.from_env() if env is None else env
     cfg = load_server_config(env.server_config) if cfg is None else cfg
@@ -369,6 +389,7 @@ def create_app(
     deduper = Deduper()
     judge_limiter = RateLimiter(10, 60.0)
     demos: list[JudgeDemo] = [demo] if demo is not None else []
+    gh = github or GitHubClient()
     _ensure_access_handler()
 
     @asynccontextmanager
@@ -399,6 +420,26 @@ def create_app(
             log.error("run_market failed for %s#%s: %s", repo, pr_number, type(exc).__name__)
             deduper.forget(repo, pr_number, head_sha)  # a redelivery may retry
 
+    def record_merge(ev: MergeEvent) -> int | None:
+        """Store the merge on the newest GATED github market for (repo, PR, head sha). Not a state change."""
+        with sf.begin() as s:
+            m = s.scalar(
+                select(Market)
+                .join(Repo, Repo.id == Market.repo_id)
+                .where(
+                    func.lower(Repo.full_name) == ev.repo.lower(), Market.source == "github",
+                    Market.pr_number == ev.pr_number, Market.head_sha == ev.head_sha,
+                    Market.state == State.GATED.value,
+                )
+                .order_by(Market.id.desc())
+                .limit(1)
+            )  # fmt: skip
+            if m is None:
+                return None
+            m.merge_sha, m.merged_at, m.merge_branch = ev.merge_sha, ev.merged_at, ev.branch
+            log.info("merge recorded for market %s", m.id)
+            return m.id
+
     @app.post("/api/hooks/github", status_code=202, dependencies=[GITHUB_HMAC])
     async def github_webhook(request: Request, background: BackgroundTasks) -> JSONResponse:
         event = request.headers.get("x-github-event", "")
@@ -408,6 +449,12 @@ def create_app(
             payload = json.loads(await request.body())
         except ValueError as exc:
             raise HTTPException(400, "webhook body must be JSON (content_type=json)") from exc
+        merge = classify_merge_event(event, payload)
+        if isinstance(merge, MergeEvent):
+            recorded = await run_in_threadpool(record_merge, merge)
+            if recorded is None:
+                return JSONResponse({"ignored": "no gated market for this merge"}, status_code=202)
+            return JSONResponse({"merge_recorded": {"market_id": recorded}}, status_code=202)
         result = classify_pr_event(event, payload)
         if isinstance(result, str):
             return JSONResponse({"ignored": result}, status_code=202)
@@ -490,6 +537,8 @@ def create_app(
                 b=m.b,
                 initial_price=m.initial_price,
                 closed_at=_iso(m.closed_at),
+                merged_at=_iso(m.merged_at),
+                merge_sha=m.merge_sha,
                 gate={"state": m.gate_state, "description": m.gate_description},
                 settlement={
                     "holdouts_passed": m.holdouts_passed,
@@ -721,6 +770,56 @@ def create_app(
             "side": r.side, "shares": r.shares, "cost": r.cost, "price_before": r.price_before,
             "price_after": r.price_after,
         }  # fmt: skip
+
+    # ------------------------------------------------------------------- post-merge settlement (demo)
+
+    @app.post("/api/markets/{market_id}/fast-forward", dependencies=[ADMIN])
+    async def fast_forward(market_id: int) -> dict[str, Any]:
+        """Settle a merged GitHub market as of the end of its post-merge window (the demo's "fast-forward
+        14 days"): the real oracle on the real repo, so a revert or fix pushed after the merge settles NO."""
+        with sf() as s:
+            row = s.execute(
+                select(Market, Repo.full_name)
+                .join(Repo, Repo.id == Market.repo_id)
+                .where(Market.id == market_id)
+            ).first()
+            if row is None:
+                raise HTTPException(404, "market not found")
+            m, repo = row
+            if m.source != "github" or State(m.state) != State.GATED or m.merge_sha is None:
+                raise HTTPException(409, "only a merged, gated GitHub market can be fast-forwarded")
+            merged_at = m.merged_at if m.merged_at.tzinfo else m.merged_at.replace(tzinfo=UTC)
+            merge_sha, branch, base_sha, head_sha = m.merge_sha, m.merge_branch, m.base_sha, m.head_sha
+        window_days = DEFAULT_WINDOW_DAYS
+        try:
+            text = await gh.get_file(repo, TARGET_CONFIG_FILENAME, base_sha) if base_sha else None
+            if text is not None:
+                window_days = parse_target_config(text).postmerge.window_days
+        except Exception as exc:  # the window only sets "now"; the default is the documented one
+            reason = type(exc).__name__
+            log.warning(
+                "market %s: base config unreadable (%s); using %d days", market_id, reason, window_days
+            )
+        merged = MergedPR(merge_sha, merged_at)
+        now = window_end(merged_at, window_days)
+        result = await asyncio.to_thread(
+            settle_fn, repo, merged, now=now, branch=branch, cache_dir=env.cache_dir, window_days=window_days
+        )
+        if result is None:
+            raise HTTPException(409, "the post-merge window is still open")
+        engine.settle(market_id, result)  # an infra error VOIDs (refund), never pays out
+        description = engine.status_description(market_id)
+        with sf() as s:
+            m = s.get_one(Market, market_id)
+            out = _pick(m, ("id", "state", "outcome", "resolution", "gate_state"))
+        try:
+            await gh.post_status(
+                repo, head_sha, "success" if out["gate_state"] == "success" else "failure", description,
+                f"{env.public_url}/m/{market_id}",
+            )  # fmt: skip
+        except Exception as exc:  # the market is settled either way; the status is a courtesy update
+            log.error("market %s: final status not posted (%s)", market_id, type(exc).__name__)
+        return {**out, "status_description": description, "window_days": window_days}
 
     # P1 remote settlement (POST /api/markets/{id}/settle, HMAC with the settle secret) is not built yet.
 
