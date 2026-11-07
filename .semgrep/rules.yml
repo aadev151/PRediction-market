@@ -1,0 +1,115 @@
+# Repo-specific semgrep rules (PLAN §8.3). CI runs them with the registry rulesets:
+#   semgrep scan --config p/python --config p/owasp-top-ten --config .semgrep/rules.yml --error
+# Rule tests live in .semgrep/tests/ (`# ruleid:` / `# ok:` annotations):
+#   semgrep --test --config .semgrep/rules.yml .semgrep/tests/
+rules:
+  - id: prm-dashboard-no-inner-html
+    languages: [javascript]
+    severity: ERROR
+    message: >-
+      Dashboard renders untrusted text (diffs, rationales, PR bodies). Assigning to innerHTML/outerHTML
+      or calling insertAdjacentHTML is an XSS sink: build nodes and set `textContent` instead.
+    metadata:
+      category: security
+      cwe: "CWE-79: Improper Neutralization of Input During Web Page Generation"
+    paths:
+      include:
+        - "prm/dashboard/**/*.js"
+    pattern-either:
+      - pattern: $EL.innerHTML = $X
+      - pattern: $EL.innerHTML += $X
+      - pattern: $EL.outerHTML = $X
+      - pattern: $EL.outerHTML += $X
+      - pattern: $EL.insertAdjacentHTML(...)
+
+  - id: prm-secret-compare-not-constant-time
+    languages: [python]
+    severity: ERROR
+    message: >-
+      `==`/`!=` on a token, secret, signature or digest leaks timing information.
+      Use `hmac.compare_digest(a, b)` instead.
+    metadata:
+      category: security
+      cwe: "CWE-208: Observable Timing Discrepancy"
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern-either:
+                  - pattern: $L == $R
+                  - pattern: $L != $R
+              - metavariable-regex:
+                  metavariable: $L
+                  regex: (?i).*(token|secret|signature|digest).*
+          - patterns:
+              - pattern-either:
+                  - pattern: $L == $R
+                  - pattern: $L != $R
+              - metavariable-regex:
+                  metavariable: $R
+                  regex: (?i).*(token|secret|signature|digest).*
+      # Presence/emptiness/length checks don't compare secret material.
+      - pattern-not: $X == None
+      - pattern-not: $X != None
+      - pattern-not: None == $X
+      - pattern-not: None != $X
+      - pattern-not: $X == ""
+      - pattern-not: $X != ""
+      - pattern-not: $X == b""
+      - pattern-not: $X != b""
+      - pattern-not: len(...) == $X
+      - pattern-not: len(...) != $X
+      - pattern-not: $X == len(...)
+      - pattern-not: $X != len(...)
+
+  - id: prm-no-shell-command
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Commands must run with an argv list and shell=False (render_command() + subprocess.run). Never pass
+      shell=True, os.system, os.popen or create_subprocess_shell: untrusted text becomes shell code.
+    metadata:
+      category: security
+      cwe: "CWE-78: Improper Neutralization of Special Elements used in an OS Command"
+    pattern-either:
+      - patterns:
+          - pattern: subprocess.$FUNC(..., shell=$SHELL, ...)
+          - pattern-not: subprocess.$FUNC(..., shell=False, ...)
+      - pattern: os.system(...)
+      - pattern: os.popen(...)
+      - pattern: asyncio.create_subprocess_shell(...)
+
+  - id: prm-tarfile-extract-without-filter
+    languages: [python]
+    severity: ERROR
+    message: >-
+      tarfile extract/extractall without a safe `filter=` (e.g. filter="data") follows absolute paths,
+      `..` and symlinks out of the destination. Pass filter="data" (or a stricter custom filter).
+    metadata:
+      category: security
+      cwe: "CWE-22: Improper Limitation of a Pathname to a Restricted Directory"
+    patterns:
+      - pattern-either:
+          - pattern-inside: |
+              $TAR = tarfile.open(...)
+              ...
+          - pattern-inside: |
+              with tarfile.open(...) as $TAR:
+                ...
+          - pattern-inside: |
+              $TAR = tarfile.TarFile(...)
+              ...
+          - pattern-inside: |
+              with tarfile.TarFile(...) as $TAR:
+                ...
+      - pattern-either:
+          - patterns:
+              - pattern-either:
+                  - pattern: $TAR.extractall(...)
+                  - pattern: $TAR.extract(...)
+              - pattern-not: $TAR.extractall(..., filter=$F, ...)
+              - pattern-not: $TAR.extract(..., filter=$F, ...)
+          # "fully_trusted" is the unsafe legacy behaviour, spelled out.
+          - pattern: $TAR.extractall(..., filter="fully_trusted", ...)
+          - pattern: $TAR.extract(..., filter="fully_trusted", ...)
+          - pattern: $TAR.extractall(..., filter=tarfile.fully_trusted_filter, ...)
+          - pattern: $TAR.extract(..., filter=tarfile.fully_trusted_filter, ...)
