@@ -65,7 +65,25 @@ Before every PR: `ruff check . && ruff format --check . && pytest -q`.
 - **`docs/DECISIONS.md`**: one line per non-trivial choice (what, why).
 - **`docs/AI_LOG.md`**: one line per AI mistake a human caught (wrong SDK shapes, weakened tests, hallucinated calls, scope drift…).
 
+## Git workflow
+
+- **Never commit or push to `main`.** `main` is protected; changes land only through a PR.
+- Work in your own branch (ideally in your own git worktree), named after the work package: `wp-<letter>/<short-topic>`,
+  e.g. `wp-a/lmsr`, `wp-b/signals`, `wp-h/ci-semgrep`. Branch from an up-to-date `main`.
+- Push your branch and open a PR to `main`. CI (`ci` job) must be green before merge.
+
 ## PRs
 
 Use `.github/pull_request_template.md`: **What** (one concern, which WP) / **Why** (requirement id) / **Tests** / **Risk**.
 Small commits, one concern per PR, under 300 changed lines where practical, with tests.
+
+## After each feature: TL;DR summary (required)
+
+When a feature is complete, end your report to the human with this summary, in plain language:
+
+**TL;DR**
+- **What this feature is about:** the problem it solves, in a sentence or two.
+- **What I did:** the files and behavior added or changed.
+- **How it ties back to the overall project:** which requirement or demo moment it serves (REQUIREMENTS ids, PLAN sections).
+- **How to test it:** exact copy-pasteable commands and what output to expect.
+- **What's left to build:** the remaining work in this WP and what it unblocks next (PLAN §9).
