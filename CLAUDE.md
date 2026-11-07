@@ -1,9 +1,10 @@
 # CLAUDE.md: PRediction Market
 
 A standalone software factory that plugs into any GitHub repo. Every PR opens a prediction market: four AI traders, each seeing
-**different** evidence, trade (LMSR) on "will this PR pass the repo's hidden holdout suite and red team?". The closing price is the
-`pr-market` GitHub status (auto-merge ≥ 0.90, human review 0.60–0.90, blocked < 0.60). Every market is then settled by actually running the
-holdouts in a sandbox, so bankrolls and calibration are earned.
+**different** evidence, trade (LMSR) on "will this PR survive N days after merge without a revert or bug fix?". The closing price is the
+`pr-market` GitHub status (auto-merge ≥ 0.90, blocked < 0.60, in between → escalation rounds, then "no consensus" = blocked). Merged markets
+settle on the outcome; rejected ones are refunded. For the hackathon the hidden holdouts, run in a sandbox, stand in for the post-merge outcome
+(`docs/DECISIONS.md` #26–29).
 
 - **Read `REQUIREMENTS.md` first** (why, P0/P1/P2 priorities), then **`PLAN.md`** (how: layout, contracts, work packages in §9).
 - `PLAN_V0.md` is **superseded** and has been removed. Ignore its "Crossroads" app entirely. If an old note mentions it, it's stale.
