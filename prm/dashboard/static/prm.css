@@ -1,0 +1,107 @@
+/* WP F. Shared dashboard styles (PLAN §6.14). Dark by design: the event's black/blue/red/yellow identity. */
+:root {
+  --bg: #0b0b0f;
+  --surface: #14141b;
+  --surface-2: #1b1b25;
+  --border: #2a2a3a;
+  --text: #e8ecff;
+  --muted: #8d93b5;
+  --blue: #1f3bff;
+  --blue-text: #7d8dff;
+  --red: #e3245a;
+  --yellow: #f0e43a;
+  --green: #29d07a;
+  --grey: #5d6280;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --sans: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.5 var(--sans);
+  min-height: 100vh;
+}
+h1, h2, h3, .mono { font-family: var(--mono); letter-spacing: -0.01em; }
+h1 { font-size: clamp(1.5rem, 3vw, 2.25rem); margin: 0 0 0.25rem; }
+h2 { font-size: 1.1rem; margin: 0 0 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+a { color: var(--blue-text); }
+a:focus-visible, button:focus-visible, select:focus-visible { outline: 2px solid var(--yellow); outline-offset: 2px; }
+.muted { color: var(--muted); }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+/* ------------------------------------------------------------------ header */
+.top {
+  display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap;
+  padding: 0.9rem clamp(16px, 3vw, 40px);
+  border-bottom: 1px solid var(--border);
+}
+.brand { font: 700 1.1rem var(--mono); color: var(--text); text-decoration: none; white-space: nowrap; }
+.brand b { color: var(--blue-text); }
+.nav { display: flex; gap: 1.25rem; flex-wrap: wrap; }
+.nav a { color: var(--muted); text-decoration: none; font: 500 0.95rem var(--mono); }
+.nav a[aria-current="page"] { color: var(--text); border-bottom: 2px solid var(--blue); }
+.live { margin-left: auto; font: 0.8rem var(--mono); color: var(--muted); display: flex; align-items: center; gap: 0.4rem; }
+.live::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--grey); }
+.live.ok::before { background: var(--green); }
+.live.down::before { background: var(--red); }
+
+main { padding: clamp(16px, 3vw, 40px); max-width: 1600px; margin: 0 auto; }
+section { margin-bottom: 2rem; }
+
+/* ------------------------------------------------------------------ cards, KPIs */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.1rem; min-width: 0; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 1.5rem; }
+.kpi .label { font-size: 0.8rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.kpi .value { font: 700 clamp(1.5rem, 2.6vw, 2.1rem) var(--mono); font-variant-numeric: tabular-nums; }
+.kpi .sub { font-size: 0.8rem; color: var(--muted); }
+
+.toolbar { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
+select, button {
+  font: 0.95rem var(--mono); color: var(--text); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 8px; padding: 0.45rem 0.7rem;
+}
+.empty { padding: 2rem; text-align: center; color: var(--muted); border: 1px dashed var(--border); border-radius: 10px; }
+.empty code { color: var(--text); }
+.error-banner { background: rgba(227, 36, 90, 0.12); border: 1px solid var(--red); color: var(--text); padding: 0.75rem 1rem; border-radius: 8px; }
+
+/* ------------------------------------------------------------------ andon tiles */
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+.tile {
+  --tone: var(--grey);
+  display: flex; flex-direction: column; gap: 0.35rem;
+  background: var(--surface); border: 1px solid var(--border); border-top: 6px solid var(--tone);
+  border-radius: 10px; padding: 0.9rem 1rem 1rem; color: var(--text); text-decoration: none; min-width: 0;
+}
+.tile:hover { background: var(--surface-2); }
+.tile .who { font: 600 0.9rem var(--mono); display: flex; min-width: 0; white-space: nowrap; }
+.tile .who .repo { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.tile .who .pr { flex: none; color: var(--blue-text); }
+.tile .price { font: 800 clamp(2.6rem, 4.5vw, 3.6rem)/1 var(--mono); color: var(--tone); font-variant-numeric: tabular-nums; }
+.tile .gate { font: 600 0.95rem var(--mono); }
+.tile .meta { font-size: 0.8rem; color: var(--muted); display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.tile .verdict { font: 600 0.9rem var(--mono); margin-top: auto; padding-top: 0.35rem; }
+.badge { font: 600 0.7rem var(--mono); text-transform: uppercase; letter-spacing: 0.05em; padding: 0.1rem 0.4rem; border-radius: 4px; background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); }
+.tone-green { --tone: var(--green); }
+.tone-red { --tone: var(--red); }
+.tone-yellow { --tone: var(--yellow); }
+.tone-void { --tone: var(--grey); }
+.tone-open { --tone: var(--grey); }
+.tone-open .price { color: var(--text); }
+.tone-open { animation: pulse 1.6s ease-in-out infinite; }
+.right { color: var(--green); }
+.wrong { color: var(--red); }
+@keyframes pulse { 50% { border-top-color: #9aa0c4; } }
+@media (prefers-reduced-motion: reduce) { .tone-open { animation: none; } }
+
+@media (max-width: 520px) {
+  .tiles { grid-template-columns: 1fr 1fr; gap: 10px; }
+  .tile { padding: 0.7rem; }
+  .tile .price { font-size: 2.2rem; }
+  .live { margin-left: 0; }
+}
+.toolbar h2 { margin: 0; }
