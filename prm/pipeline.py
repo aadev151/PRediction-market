@@ -314,9 +314,15 @@ def _demo_repo(root: Path, patch: Path, work: Path, message: str) -> tuple[Path,
 
 
 def _merge_and_settle(
-    repo: Path, work: Path, pr_commit: str, after_merge: AfterMerge, merged_at: datetime
+    repo: Path,
+    work: Path,
+    pr_commit: str,
+    after_merge: AfterMerge,
+    merged_at: datetime,
+    window_days: int,
 ) -> SettlementResult:
-    """Merge ``pr`` with --no-ff at ``merged_at``, optionally revert it, then ask the post-merge oracle."""
+    """Merge ``pr`` with --no-ff at ``merged_at``, optionally revert it, then ask the post-merge oracle
+    with the target's ``[postmerge].window_days`` (DECISIONS #58)."""
     _git(repo, work, "checkout", "-q", DEMO_BRANCH)
     _git(repo, work, "merge", "-q", "--no-ff", "-m", "Merge demo PR", "pr", when=merged_at)
     merged = MergedPR(_git(repo, work, "rev-parse", "HEAD"), merged_at)
@@ -324,8 +330,8 @@ def _merge_and_settle(
         _git(repo, work, "revert", "--no-edit", pr_commit, when=merged_at + REVERT_DELAY)
         now = merged_at + REVERT_SETTLE_AFTER
     else:  # fast-forward the window: a quiet PR settles YES at its end
-        now = evaluate(repo, merged, now=merged_at, branch=DEMO_BRANCH).settles_at
-    result = settle_postmerge(repo, merged, now=now, branch=DEMO_BRANCH)
+        now = evaluate(repo, merged, now=merged_at, branch=DEMO_BRANCH, window_days=window_days).settles_at
+    result = settle_postmerge(repo, merged, now=now, branch=DEMO_BRANCH, window_days=window_days)
     return result or SettlementResult.infra_error("post-merge settlement still pending")
 
 
@@ -374,7 +380,13 @@ async def run_local_market(
                     market_id = holder[0]
                     merged_at = deps.clock()
                     result = await asyncio.to_thread(
-                        _merge_and_settle, git_repo, work, pr_commit, after_merge, merged_at
+                        _merge_and_settle,
+                        git_repo,
+                        work,
+                        pr_commit,
+                        after_merge,
+                        merged_at,
+                        target.postmerge.window_days,
                     )
                     deps.engine.settle(market_id, result)
                     await _post_final(deps, market_id, bundle, record, f"{deps.env.public_url}/m/{market_id}")
