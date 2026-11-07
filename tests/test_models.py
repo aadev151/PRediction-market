@@ -1,6 +1,7 @@
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm.exc import StaleDataError
 
 from prm.db import make_session_factory
 from prm.models import AppendOnlyError, Event, Market, Position, Repo, Trader
@@ -110,3 +111,76 @@ def test_events_refuse_raw_sql_mutation(session, sql):
     _event(session, m)
     with pytest.raises(IntegrityError, match="append-only"):
         session.execute(text(sql))
+
+
+def test_market_identity_includes_attempt_so_a_void_market_can_be_retried(session):
+    repo, _ = _seed(session)
+    session.add(_market(repo.id, attempt=2))
+    session.flush()
+    session.add(_market(repo.id, attempt=2))
+    with pytest.raises(IntegrityError):
+        session.flush()
+
+
+@pytest.fixture
+def file_sf(tmp_path):
+    """File-backed SQLite: separate connections really see each other's commits (no StaticPool)."""
+    return make_session_factory(f"sqlite:///{tmp_path / 'race.db'}")
+
+
+def test_two_sessions_settling_the_same_gated_market_pay_exactly_once(file_sf):
+    with file_sf.begin() as s:
+        repo = Repo(full_name="acme/widgets")
+        s.add(repo)
+        s.flush()
+        m = _market(repo.id, state=State.GATED.value)
+        t = Trader(repo_id=repo.id, name="skeptic", kind="agent", model="m", bankroll=100.0)
+        s.add_all([m, t])
+        s.flush()
+        mid, tid = m.id, t.id
+    s1, s2 = file_sf(), file_sf()
+    # Both read GATED before either writes (hold the rows: the identity map only keeps referenced objects).
+    held = {s: (s.get(Market, mid), s.get(Trader, tid)) for s in (s1, s2)}
+    assert all(m.state == State.GATED.value for m, _ in held.values())
+
+    def pay(s) -> None:
+        market, trader = held[s]
+        market.state = State.SETTLED.value
+        trader.bankroll += 10.0
+        s.commit()
+
+    pay(s1)
+    with pytest.raises(StaleDataError):
+        pay(s2)
+    s2.rollback()
+    with file_sf() as s:
+        assert s.get(Trader, tid).bankroll == 100.0 + 10.0
+    s1.close()
+    s2.close()
+
+
+@pytest.mark.parametrize("model", [Trader, Position])
+def test_concurrent_read_modify_write_cannot_lose_an_update(file_sf, model):
+    with file_sf.begin() as s:
+        repo = Repo(full_name="acme/widgets")
+        s.add(repo)
+        s.flush()
+        m = _market(repo.id)
+        t = Trader(repo_id=None, name="judge", kind="human", model=None, bankroll=100.0)
+        s.add_all([m, t])
+        s.flush()
+        s.add(Position(market_id=m.id, trader_id=t.id, cap=25.0))
+        key = t.id if model is Trader else (m.id, t.id)
+    field = "bankroll" if model is Trader else "spent"
+    s1, s2 = file_sf(), file_sf()
+    rows = [s.get(model, key) for s in (s1, s2)]
+    for row in rows:
+        setattr(row, field, getattr(row, field) + 5.0)
+    s1.commit()
+    with pytest.raises(StaleDataError):
+        s2.commit()
+    s2.rollback()
+    with file_sf() as s:
+        assert getattr(s.get(model, key), field) in (105.0, 5.0)  # one +5 landed, the other was refused
+    s1.close()
+    s2.close()

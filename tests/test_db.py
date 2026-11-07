@@ -1,7 +1,8 @@
+import pytest
 from sqlalchemy import inspect, text
 
 from prm.config import RuntimeEnv
-from prm.db import init_db, make_engine, make_session_factory
+from prm.db import init_db, is_sqlite_memory, make_engine, make_session_factory
 from prm.models import Repo
 
 
@@ -60,3 +61,28 @@ def test_make_session_factory_accepts_an_engine():
     engine = make_engine("sqlite://")
     sf = make_session_factory(engine)
     assert sf.kw["bind"] is engine
+
+
+MEMORY_URLS = [
+    "sqlite://",
+    "sqlite:///:memory:",
+    "sqlite+pysqlite://",
+    "sqlite+pysqlite:///:memory:",
+    "sqlite:///file:prmmem?mode=memory&cache=shared&uri=true",
+]
+
+
+@pytest.mark.parametrize("url", MEMORY_URLS)
+def test_every_in_memory_spelling_shares_one_database(url):
+    assert is_sqlite_memory(url)
+    sf = make_session_factory(url)
+    with sf() as s:
+        s.add(Repo(full_name="a/b"))
+        s.commit()
+    with sf() as s:  # a second session (and connection) sees the same tables and rows
+        assert s.query(Repo).count() == 1
+
+
+@pytest.mark.parametrize("url", ["sqlite:///prm.db", "sqlite+pysqlite:////tmp/x.db", "postgresql://u@h/db"])
+def test_file_and_server_urls_are_not_memory(url):
+    assert not is_sqlite_memory(url)

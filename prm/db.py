@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import Engine, create_engine, event
+from sqlalchemy import Engine, create_engine, event, make_url
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -18,12 +18,21 @@ def _sqlite_pragmas(dbapi_conn: Any, _record: Any) -> None:
     cur.close()
 
 
+def is_sqlite_memory(url: str) -> bool:
+    """True for every spelling of an in-memory SQLite URL (``sqlite://``, ``sqlite+pysqlite:///:memory:``,
+    ``sqlite:///file:x?mode=memory&uri=true``)."""
+    u = make_url(url)
+    if u.get_backend_name() != "sqlite":
+        return False
+    return u.database in (None, "", ":memory:") or u.query.get("mode") == "memory"
+
+
 def make_engine(url: str) -> Engine:
     """SQLAlchemy engine. SQLite gets ``check_same_thread=False`` and foreign keys ON for every connection."""
     kwargs: dict[str, Any] = {}
-    if url.startswith("sqlite"):
+    if make_url(url).get_backend_name() == "sqlite":
         kwargs["connect_args"] = {"check_same_thread": False}
-        if url in ("sqlite://", "sqlite:///:memory:"):
+        if is_sqlite_memory(url):
             kwargs["poolclass"] = StaticPool  # one shared in-memory database, not one per connection
     engine = create_engine(url, **kwargs)
     if engine.dialect.name == "sqlite":

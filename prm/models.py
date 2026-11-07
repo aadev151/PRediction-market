@@ -3,6 +3,10 @@
 Money is stored as floats (credits, not dollars). ``markets.state`` holds a ``prm.types.State`` value and is
 only ever written by ``prm.market.state.transition``. ``events`` is append-only: the ORM refuses updates and
 deletes, and on SQLite triggers refuse them at the database too.
+
+``markets``, ``traders`` and ``positions`` carry a ``version_id`` for optimistic locking: an UPDATE from a
+session that read a stale row matches nothing and raises ``StaleDataError``, rolling back the whole
+transaction. That stops a racing settle from paying twice and two trades from losing a bankroll debit.
 """
 
 from __future__ import annotations
@@ -40,6 +44,8 @@ class Trader(Base):
     model: Mapped[str | None] = mapped_column(String(100))
     bankroll: Mapped[float]
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    version_id: Mapped[int] = mapped_column(default=1)
+    __mapper_args__ = {"version_id_col": version_id}
 
 
 class LeagueRun(Base):
@@ -53,10 +59,11 @@ class LeagueRun(Base):
 
 class Market(Base):
     __tablename__ = "markets"
-    __table_args__ = (UniqueConstraint("repo_id", "pr_number", "head_sha", "source"),)
+    __table_args__ = (UniqueConstraint("repo_id", "pr_number", "head_sha", "source", "attempt"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     repo_id: Mapped[int] = mapped_column(ForeignKey("repos.id"))
     source: Mapped[str] = mapped_column(String(10))  # 'github' | 'league' | 'demo'
+    attempt: Mapped[int] = mapped_column(default=1)  # a VOID market can be retried with attempt + 1
     pr_number: Mapped[int | None]
     head_sha: Mapped[str | None] = mapped_column(String(64))
     base_sha: Mapped[str | None] = mapped_column(String(64))
@@ -80,6 +87,8 @@ class Market(Base):
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     league_run_id: Mapped[int | None] = mapped_column(ForeignKey("league_runs.id"))
+    version_id: Mapped[int] = mapped_column(default=1)
+    __mapper_args__ = {"version_id_col": version_id}
 
 
 class Belief(Base):
@@ -123,6 +132,8 @@ class Position(Base):
     spent: Mapped[float] = mapped_column(default=0.0)
     cap: Mapped[float] = mapped_column(default=0.0)
     payout: Mapped[float | None]
+    version_id: Mapped[int] = mapped_column(default=1)
+    __mapper_args__ = {"version_id_col": version_id}
 
 
 class Event(Base):
