@@ -9,6 +9,7 @@ start_bankroll = 100.0
 max_spend_fraction = 0.25
 max_spend_abs = 30.0
 min_traders = 2
+max_escalations = 2             # rounds while B <= p < A, then "no consensus" (DECISIONS #28)
 
 [gate]
 auto_merge = 0.90

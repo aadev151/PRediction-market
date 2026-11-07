@@ -6,6 +6,13 @@ propagates, and ``gate()`` always returns a decision. Caller mistakes (``Illegal
 ``IllegalTransition``, ``TradeRejected``, ``TradeConflict``, ``MarketNotFound``) raise without voiding, and a
 human trade never voids a market: its transaction just rolls back.
 
+Gate and settlement (DECISIONS #26-29): ``p >= auto_merge`` merges, ``p < human_review`` (B) blocks, and in
+between the agents run escalation rounds while still TRADING (each sees the others' rationales and the price,
+re-estimates once, and trades with what is left of its cumulative cap). Still in between at close -> "no
+consensus" (failure). Only a merged market (gate ``success``) pays out on its outcome. A rejected one runs the
+holdouts as an unpaid check, then goes VOID with every spend refunded and its gate text kept. Demo (judge)
+markets always pay out on the outcome: they are a game, not a merge decision.
+
 Concurrency: markets, traders and positions are optimistically locked (``version_id``). A stale write raises
 ``StaleDataError`` and rolls back the whole transaction; engine steps re-read and retry, human trades turn it
 into ``TradeConflict``.
@@ -18,7 +25,7 @@ import json
 import logging
 import math
 import random
-from collections.abc import Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime
@@ -38,7 +45,9 @@ from prm.types import (
     BELIEF_MIN,
     TERMINAL_STATES,
     BeliefResult,
+    EscalationContext,
     GateDecision,
+    PeerView,
     PRBundle,
     SettlementResult,
     Side,
@@ -55,14 +64,23 @@ MAX_ATTEMPTS = 3  # markets per (repo, pr, head_sha, source); a VOID one may be 
 STALE_RETRIES = 3
 DEFAULT_BELIEF_TIMEOUT_S = 150.0  # the LLM client allows 45 s x up to 3 attempts
 _GATED_OR_LATER = frozenset({State.GATED, State.SETTLING, State.SETTLED})
+PAID, REFUNDED, VOIDED = "paid", "refunded", "void"  # markets.resolution
 
 T = TypeVar("T")
+# Called before each escalation round with (round, max_rounds, price), e.g. to post a pending status.
+EscalationHook = Callable[[int, int, float], Awaitable[None]]
 
 
 class BeliefProvider(Protocol):
-    """The A<->B seam. Implementations should never raise; if one does, the trader abstains."""
+    """The A<->B seam. Implementations should never raise; if one does, the trader abstains.
 
-    async def get_belief(self, spec: TraderSpec, bundle: PRBundle) -> BeliefResult: ...
+    ``escalation`` is None for the first belief. In an escalation round it carries the price and the other
+    traders' rationales; the engine only passes it as a keyword, and only in escalation rounds.
+    """
+
+    async def get_belief(
+        self, spec: TraderSpec, bundle: PRBundle, escalation: EscalationContext | None = None
+    ) -> BeliefResult: ...
 
 
 class MarketNotFound(LookupError):
@@ -179,7 +197,14 @@ class MarketEngine:
         raise AssertionError("unreachable")  # pragma: no cover
 
     def _trade(
-        self, s: Session, m: Market, trader: Trader, belief: float, budget: float, round_: int
+        self,
+        s: Session,
+        m: Market,
+        trader: Trader,
+        belief: float,
+        budget: float,
+        round_: int,
+        escalation: int = 0,
     ) -> TradeResult | None:
         pos = self._position(s, m, trader)
         budget = min(budget, pos.cap - pos.spent, trader.bankroll)
@@ -199,18 +224,26 @@ class MarketEngine:
         now = self._clock()
         s.add(
             Trade(
-                market_id=m.id, trader_id=trader.id, round=round_, side=t.side, shares=t.shares,
-                cost=t.cost, price_before=p, price_after=p_after, created_at=now,
+                market_id=m.id, trader_id=trader.id, escalation=escalation, round=round_, side=t.side,
+                shares=t.shares, cost=t.cost, price_before=p, price_after=p_after, created_at=now,
             )
         )  # fmt: skip
-        detail = f"round {round_}: {t.side} {t.shares:.4f} shares for {t.cost:.4f} ({p:.4f} -> {p_after:.4f})"
+        phase = f"escalation {escalation}, " if escalation else ""
+        move = f"{t.side} {t.shares:.4f} shares for {t.cost:.4f} ({p:.4f} -> {p_after:.4f})"
+        detail = f"{phase}round {round_}: {move}"
         s.add(Event(market_id=m.id, from_state=m.state, to_state=m.state, actor=trader.name, detail=detail,
                     created_at=now))  # fmt: skip
         return TradeResult(trader.name, t.side, t.shares, t.cost, p, p_after, round_)
 
-    async def _safe_belief(self, spec: TraderSpec, bundle: PRBundle) -> BeliefResult:
+    async def _safe_belief(
+        self, spec: TraderSpec, bundle: PRBundle, escalation: EscalationContext | None = None
+    ) -> BeliefResult:
         try:
-            result = await asyncio.wait_for(self.llm.get_belief(spec, bundle), self._belief_timeout_s)
+            if escalation is None:
+                call = self.llm.get_belief(spec, bundle)
+            else:
+                call = self.llm.get_belief(spec, bundle, escalation=escalation)
+            result = await asyncio.wait_for(call, self._belief_timeout_s)
             if not isinstance(result, BeliefResult):
                 raise TypeError(f"provider returned {type(result).__name__}, not BeliefResult")
             return result
@@ -223,7 +256,8 @@ class MarketEngine:
 
     def create(self, repo_id: int, bundle: PRBundle) -> int:
         """CREATED -> CONTEXT_READY. Idempotent on (repo, pr_number, head_sha, source): returns the latest
-        non-VOID market for that key; if the latest is VOID, opens attempt + 1 (at most ``MAX_ATTEMPTS``)."""
+        non-VOID market for that key; if the latest is VOID, opens attempt + 1 (at most ``MAX_ATTEMPTS``).
+        A refunded (rejected) market is final for its sha and is returned as is; only error VOIDs retry."""
         with self._sf.begin() as s:
             attempt = 1
             if bundle.pr_number is not None and bundle.head_sha is not None:
@@ -234,7 +268,7 @@ class MarketEngine:
                     ).order_by(Market.attempt.desc()).limit(1)
                 )  # fmt: skip
                 if latest is not None:
-                    if State(latest.state) != State.VOID:
+                    if State(latest.state) != State.VOID or latest.resolution == REFUNDED:
                         return latest.id
                     if latest.attempt >= MAX_ATTEMPTS:
                         raise MarketAttemptsExhausted(
@@ -258,22 +292,106 @@ class MarketEngine:
             self._move(s, m, State.CONTEXT_READY)
             return m.id
 
-    async def run_agents(self, market_id: int, bundle: PRBundle) -> list[BeliefResult]:
+    async def run_agents(
+        self, market_id: int, bundle: PRBundle, *, on_escalation: EscalationHook | None = None
+    ) -> list[BeliefResult]:
         """CONTEXT_READY -> TRADING; parallel beliefs (each bounded by ``belief_timeout_s``); ``rounds``
-        rounds of capped trades in random order. Fewer than ``min_traders`` responders -> VOID."""
+        rounds of capped trades in random order. Fewer than ``min_traders`` responders -> VOID.
+
+        Then, while the price sits in ``[human_review, auto_merge)`` of the target's gate (``bundle.target``,
+        read from the base branch), up to ``max_escalations`` escalation rounds: ``on_escalation`` is awaited,
+        every trader re-estimates once with an ``EscalationContext`` and the agents trade ``rounds`` more
+        rounds with what is left of their cumulative caps (so R-MKT-3 still holds). An escalation round with
+        fewer than ``min_traders`` responders VOIDs too, and so does a hook that raises (fail closed).
+        Returns every belief, in order.
+        """
         with self._sf.begin() as s:
             self._move(s, self._market(s, market_id), State.TRADING)
         with self._fail_closed(market_id, "run_agents"):
             specs = list(self.cfg.traders)
             beliefs = list(await asyncio.gather(*(self._safe_belief(sp, bundle) for sp in specs)))
-            responders = self._retry_stale(lambda: self._record_and_trade(market_id, specs, beliefs))
-            need = self.cfg.market.min_traders
-            if responders is not None and responders < need:
-                self.void(market_id, f"only {responders} trader(s) responded; need {need}")
-            return beliefs
+            every = list(beliefs)
+            if not self._trading_phase(market_id, specs, beliefs, 0):
+                return every
+            latest = self._responders(specs, beliefs)
+            band = self._escalation_band(bundle)
+            max_rounds = self.cfg.market.max_escalations
+            for k in range(1, max_rounds + 1):
+                price = self._retry_stale(lambda k=k: self._begin_escalation(market_id, k, max_rounds, band))
+                if price is None:
+                    break
+                if on_escalation is not None:
+                    await on_escalation(k, max_rounds, price)
+                ctx = {
+                    sp.name: self._escalation_context(sp.name, k, max_rounds, price, latest) for sp in specs
+                }
+                beliefs = list(
+                    await asyncio.gather(*(self._safe_belief(sp, bundle, ctx[sp.name]) for sp in specs))
+                )
+                every.extend(beliefs)
+                if not self._trading_phase(market_id, specs, beliefs, k):
+                    break
+                latest.update(self._responders(specs, beliefs))
+            return every
+
+    def _trading_phase(
+        self, market_id: int, specs: list[TraderSpec], beliefs: list[BeliefResult], escalation: int
+    ) -> bool:
+        """Record and trade one phase. False if the market left TRADING or was voided for too few traders."""
+        responders = self._retry_stale(lambda: self._record_and_trade(market_id, specs, beliefs, escalation))
+        if responders is None:
+            return False
+        need = self.cfg.market.min_traders
+        if responders < need:
+            phase = f" in escalation {escalation}" if escalation else ""
+            self.void(market_id, f"only {responders} trader(s) responded{phase}; need {need}")
+            return False
+        return True
+
+    def _escalation_band(self, bundle: PRBundle) -> tuple[float, float] | None:
+        """[B, A) for this target. None (no escalation) if the overrides are unsafe: ``gate()`` voids then."""
+        try:
+            th = self.cfg.gate_for(bundle.target.gate)
+        except ConfigError:
+            return None
+        return th.human_review, th.auto_merge
+
+    def _begin_escalation(
+        self, market_id: int, k: int, max_rounds: int, band: tuple[float, float] | None
+    ) -> float | None:
+        """If the market is TRADING with its price in the band, log escalation ``k`` and return the price."""
+        if band is None:
+            return None
+        with self._sf.begin() as s:
+            m = self._market(s, market_id)
+            if State(m.state) != State.TRADING:
+                return None
+            p = lmsr.price(m.q_yes, m.q_no, m.b)
+            if not band[0] <= p < band[1]:
+                return None
+            m.escalations = k
+            detail = f"escalation {k}/{max_rounds} (p={p:.2f})"
+            s.add(Event(market_id=m.id, from_state=m.state, to_state=m.state, actor="engine", detail=detail,
+                        created_at=self._clock()))  # fmt: skip
+            return p
+
+    @staticmethod
+    def _responders(specs: list[TraderSpec], beliefs: list[BeliefResult]) -> dict[str, BeliefResult]:
+        """Roster name -> belief, for traders that gave a number (keyed by the roster, not the provider)."""
+        return {sp.name: br for sp, br in zip(specs, beliefs, strict=True) if br.p_yes is not None}
+
+    @staticmethod
+    def _escalation_context(
+        name: str, k: int, max_rounds: int, price: float, latest: dict[str, BeliefResult]
+    ) -> EscalationContext:
+        own = latest.get(name)
+        peers = tuple(PeerView(n, br.rationale, list(br.key_risks)) for n, br in latest.items() if n != name)
+        return EscalationContext(
+            k, max_rounds, price, own.p_yes if own else None, own.rationale if own else "", peers
+        )
 
     def _record_and_trade(
-        self, market_id: int, specs: list[TraderSpec], beliefs: list[BeliefResult]
+        self, market_id: int, specs: list[TraderSpec], beliefs: list[BeliefResult], escalation: int = 0
     ) -> int | None:
         """Persist every belief, then trade if enough responded. Returns the responder count (None if the
         market left TRADING while beliefs were in flight)."""
@@ -285,21 +403,23 @@ class MarketEngine:
             for spec, br in zip(specs, beliefs, strict=True):
                 s.add(
                     Belief(
-                        market_id=m.id, trader_id=agents[spec.name].id, p_yes=br.p_yes,
-                        rationale=br.rationale, key_risks_json=json.dumps(br.key_risks), model=br.model,
-                        input_tokens=br.input_tokens, output_tokens=br.output_tokens,
+                        market_id=m.id, trader_id=agents[spec.name].id, escalation=escalation,
+                        p_yes=br.p_yes, rationale=br.rationale, key_risks_json=json.dumps(br.key_risks),
+                        model=br.model, input_tokens=br.input_tokens, output_tokens=br.output_tokens,
                         latency_ms=br.latency_ms, cost_usd=br.cost_usd, error=br.error,
                     )
                 )  # fmt: skip
             m.cost_usd += sum(br.cost_usd for br in beliefs)
-            m.latency_ms = max((br.latency_ms for br in beliefs), default=0)
+            # beliefs in a phase run in parallel and phases run in sequence: wall time = sum of phase maxima
+            m.latency_ms += max((br.latency_ms for br in beliefs), default=0)
             active = [(agents[sp.name], br.p_yes) for sp, br in zip(specs, beliefs, strict=True)
                       if br.p_yes is not None and math.isfinite(br.p_yes)]  # fmt: skip
             if len(active) >= self.cfg.market.min_traders:
                 require_action(m, "agent_trade")
                 for r in range(1, self.cfg.market.rounds + 1):
                     for trader, p_yes in self._rng.sample(active, k=len(active)):
-                        self._trade(s, m, trader, min(max(p_yes, BELIEF_MIN), BELIEF_MAX), math.inf, r)
+                        belief = min(max(p_yes, BELIEF_MIN), BELIEF_MAX)
+                        self._trade(s, m, trader, belief, math.inf, r, escalation)
             return len(active)
 
     def open_human_window(self, market_id: int) -> None:
@@ -342,20 +462,26 @@ class MarketEngine:
             return m.final_price
 
     def gate(self, market_id: int, target_gate_overrides: TargetGateOverrides | None) -> GateDecision:
-        """CLOSED -> GATED. Idempotent: a gated (or later) market returns its stored decision, a VOID one the
-        failure decision. Any unexpected error VOIDs and still returns ``failure``; it never raises one."""
+        """CLOSED -> GATED: ``success`` "auto-merge OK", or ``failure`` "blocked" / "no consensus". Never
+        ``pending``: escalation already happened while TRADING. Idempotent: a gated (or later) market and a
+        refunded (rejected) one return their stored decision, any other VOID market the failure decision.
+        Any unexpected error VOIDs and still returns ``failure``; it never raises one."""
         with self._fail_closed(market_id, "gate", reraise=False):
             return self._gate(market_id, target_gate_overrides)
         return VOID_GATE
+
+    @staticmethod
+    def _stored_gate(m: Market) -> GateDecision:
+        return GateDecision(m.gate_state, m.gate_description or "", m.final_price)  # type: ignore[arg-type]
 
     def _gate(self, market_id: int, overrides: TargetGateOverrides | None) -> GateDecision:
         with self._sf.begin() as s:
             m = self._market(s, market_id)
             state = State(m.state)
             if state == State.VOID:
-                return VOID_GATE
+                return self._stored_gate(m) if m.resolution == REFUNDED else VOID_GATE
             if state in _GATED_OR_LATER:
-                return GateDecision(m.gate_state, m.gate_description or "", m.final_price)  # type: ignore[arg-type]
+                return self._stored_gate(m)
             require_action(m, "gate")
             try:
                 th = self.cfg.gate_for(overrides)
@@ -365,10 +491,10 @@ class MarketEngine:
                 p = m.final_price if m.final_price is not None else lmsr.price(m.q_yes, m.q_no, m.b)
                 if p >= th.auto_merge:
                     d = GateDecision("success", f"auto-merge OK (p={p:.2f})", p)
-                elif p >= th.human_review:
-                    d = GateDecision("pending", f"needs 1 human review (p={p:.2f})", p)
-                else:
+                elif p < th.human_review:
                     d = GateDecision("failure", f"blocked (p={p:.2f})", p)
+                else:  # still undecided after the escalation rounds: fail closed (DECISIONS #28)
+                    d = GateDecision("failure", f"no consensus (p={p:.2f})", p)
                 m.gate_state, m.gate_description, m.final_price = d.state, d.description, p
                 self._move(s, m, State.GATED, d.description)
                 return d
@@ -376,13 +502,23 @@ class MarketEngine:
         return VOID_GATE
 
     def settle(self, market_id: int, result: SettlementResult) -> dict[str, float]:
-        """GATED -> SETTLING -> payouts -> SETTLED. ``result.error`` VOIDs.
+        """Apply the oracle's result to a GATED market. ``result.error`` VOIDs (refund, no outcome).
 
-        Idempotent and race-safe: an already SETTLED market (including one a concurrent call just settled)
-        pays nothing and returns the stored payouts; a VOID market returns {}.
+        - Merged (gate ``success``) or a demo market: SETTLING -> payouts on the outcome -> SETTLED.
+        - Rejected (blocked / no consensus): the result is stored as an unpaid check, every spend is refunded,
+          and the market goes VOID with resolution ``refunded``, keeping its gate (DECISIONS #27, #29).
+
+        Returns the payouts ({} when nothing was paid). Idempotent and race-safe: an already SETTLED market
+        (including one a concurrent call just settled) pays nothing and returns the stored payouts; a VOID
+        market returns {}.
         """
         with self._fail_closed(market_id, "settle"):
             return self._retry_stale(lambda: self._settle_once(market_id, result))
+
+    @staticmethod
+    def _pays_out(m: Market) -> bool:
+        """Only merged markets settle on the outcome; judge (demo) markets are a game and always do."""
+        return m.gate_state == "success" or m.source == "demo"
 
     def _settle_once(self, market_id: int, result: SettlementResult) -> dict[str, float]:
         with self._sf.begin() as s:
@@ -393,15 +529,23 @@ class MarketEngine:
                 return {}
             require_action(m, "settle")
             if not result.error:
-                self._move(s, m, State.SETTLING, f"outcome {result.outcome}")
                 m.outcome = result.outcome
                 m.holdouts_passed, m.holdouts_total = result.holdouts_passed, result.holdouts_total
                 m.findings_json = json.dumps([asdict(f) for f in result.findings])
+                m.settled_at = self._clock()
+                counts = f"{result.holdouts_passed}/{result.holdouts_total}"
+                if not self._pays_out(m):
+                    self._refund(s, m)
+                    m.resolution = REFUNDED
+                    detail = f"rejected, refunded; unpaid check: outcome {result.outcome} ({counts})"
+                    self._move(s, m, State.VOID, detail)
+                    return {}
+                self._move(s, m, State.SETTLING, f"outcome {result.outcome} ({counts})")
                 require_action(m, "payout")
                 for pos in s.scalars(select(Position).where(Position.market_id == m.id)):
                     pos.payout = pos.yes_shares if result.outcome == "YES" else pos.no_shares
                     s.get_one(Trader, pos.trader_id).bankroll += pos.payout
-                m.settled_at = self._clock()
+                m.resolution = PAID
                 self._move(s, m, State.SETTLED)
                 return self._payouts(s, m)
         self.void(market_id, "settlement infrastructure error")
@@ -416,8 +560,14 @@ class MarketEngine:
         ).all()
         return {name: payout or 0.0 for name, payout in rows}
 
+    def _refund(self, s: Session, m: Market) -> None:
+        for pos in s.scalars(select(Position).where(Position.market_id == m.id)):
+            s.get_one(Trader, pos.trader_id).bankroll += pos.spent
+            pos.payout = pos.spent
+
     def void(self, market_id: int, reason: str) -> None:
-        """Any non-terminal state -> VOID; refund every position's ``spent`` once. Terminal markets: no-op."""
+        """Any non-terminal state -> VOID; refund every position's ``spent`` once; gate = failure ("market
+        void: human review required"). Terminal markets: no-op."""
         self._retry_stale(lambda: self._void_once(market_id, reason))
 
     def _void_once(self, market_id: int, reason: str) -> None:
@@ -425,9 +575,21 @@ class MarketEngine:
             m = self._market(s, market_id)
             if State(m.state) in TERMINAL_STATES:
                 return
-            for pos in s.scalars(select(Position).where(Position.market_id == m.id)):
-                s.get_one(Trader, pos.trader_id).bankroll += pos.spent
-                pos.payout = pos.spent
-            m.gate_state, m.gate_description = "failure", VOID_DESCRIPTION
+            self._refund(s, m)
+            m.gate_state, m.gate_description, m.resolution = "failure", VOID_DESCRIPTION, VOIDED
             self._move(s, m, State.VOID, reason)
         log.warning("market %s voided: %s", market_id, reason)
+
+    def status_description(self, market_id: int) -> str:
+        """The final ``pr-market`` description (R-GATE-3), e.g. "auto-merge OK (p=0.94) · settled YES · market
+        right" or "blocked (p=0.21) · refunded · holdouts agree". Before settlement: just the gate text."""
+        with self._sf() as s:
+            m = self._market(s, market_id)
+            gate_text = m.gate_description or ""
+            if m.resolution == PAID and m.outcome is not None:
+                right = (m.gate_state == "success") == (m.outcome == "YES")
+                return f"{gate_text} · settled {m.outcome} · market {'right' if right else 'wrong'}"
+            if m.resolution == REFUNDED and m.outcome is not None:
+                agree = "agree" if m.outcome == "NO" else "disagree"
+                return f"{gate_text} · refunded · holdouts {agree}"
+            return gate_text
