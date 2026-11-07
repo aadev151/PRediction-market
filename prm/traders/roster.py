@@ -10,10 +10,11 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Sequence
 
-from prm.config import ConfigError, RuntimeEnv, ServerConfig, TraderSpec
+from prm.config import RuntimeEnv, ServerConfig, TraderSpec
 from prm.traders.base import BeliefProvider, abstain
 from prm.traders.context import build_contexts
 from prm.traders.fake import FakeProvider
+from prm.traders.llm import LLMProvider
 from prm.traders.replay import ReplayProvider
 from prm.types import BeliefResult, PRBundle
 
@@ -25,7 +26,7 @@ def make_provider(cfg: ServerConfig, env: RuntimeEnv | None = None) -> BeliefPro
         return ReplayProvider(env.replay_beliefs, fallback=FakeProvider() if env.fake_llm else None)
     if env.fake_llm:
         return FakeProvider()
-    raise ConfigError("live LLM traders are not wired yet; set PRM_FAKE_LLM=1 or PRM_REPLAY_BELIEFS")
+    return LLMProvider(cfg)
 
 
 async def gather_beliefs(

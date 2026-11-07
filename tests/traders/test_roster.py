@@ -1,11 +1,10 @@
 from pathlib import Path
 
-import pytest
-
-from prm.config import ConfigError, RuntimeEnv, ServerConfig, TraderSpec
+from prm.config import RuntimeEnv, ServerConfig, TraderSpec
 from prm.traders import roster
 from prm.traders.base import abstain
 from prm.traders.fake import FakeProvider, fake_belief
+from prm.traders.llm import LLMProvider
 from prm.traders.replay import ReplayProvider
 from prm.traders.roster import gather_beliefs, make_provider
 
@@ -20,9 +19,9 @@ def test_make_provider_precedence():
     assert isinstance(strict, ReplayProvider) and strict.fallback is None
 
 
-def test_make_provider_without_fake_or_replay_fails_closed():
-    with pytest.raises(ConfigError):
-        make_provider(CFG, RuntimeEnv())
+def test_make_provider_defaults_to_live_llm_without_touching_the_network():
+    provider = make_provider(CFG, RuntimeEnv())
+    assert isinstance(provider, LLMProvider) and provider._client is None  # client is created lazily
 
 
 async def test_gather_with_fake(bundle):
