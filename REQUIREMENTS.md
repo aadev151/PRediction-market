@@ -58,7 +58,7 @@ Relevant talks during the build (don't attend; just note the vocabulary): 2:00 "
 each seeing *different* evidence, bet on one question: **"If we merge this PR, will it survive N days without a revert or a bug fix to its lines?"**
 The closing price is posted as a GitHub status check that decides whether the PR auto-merges, is blocked, or goes to another escalation round (no human band).
 Merged PRs are **settled** by what actually happens to them after merge, so trader bankrolls and the calibration plot are earned, not claimed. Rejected PRs
-are refunded. For the hackathon the hidden holdouts stand in for that post-merge outcome (DECISIONS #16–19).
+are refunded. For the hackathon the hidden holdouts stand in for that post-merge outcome (DECISIONS #26–29).
 
 **Lineage (say it):** StrongDM's Software Factory (Feb 2026) keeps **holdout scenarios** outside the codebase so agents can't reward-hack them, and
 measures "satisfaction" as a probability. **Our twist:** that probability becomes a *tradable price* set by competing agents with different
@@ -90,7 +90,7 @@ information, and the price is the merge gate. Markets beat averaging because tra
 - **R-MKT-2 (P0)** Persistent trader bankrolls (start 100), **per target repo**. Per-market spend cap = `min(25% of bankroll, 30)`. Every trade is logged.
 - **R-MKT-3 (P0)** **Safety invariant:** no single trader can move the price from 0.50 to the auto-merge threshold 0.90 (that costs b·ln5 ≈ 32.2 > 30). Covered by a test.
 - **R-MKT-4 (P0)** Settle **every merged** market (auto-merged included) on its outcome (R-SET-1). Payout = winning shares × 1. Rejected and no-consensus
-  markets are VOID: everyone is refunded, nobody profits (DECISIONS #17). VOID refunds.
+  markets are VOID: everyone is refunded, nobody profits (DECISIONS #27). VOID refunds.
 - **R-SM-1 (P0)** Explicit state machine: `CREATED → CONTEXT_READY → TRADING → [HUMAN_WINDOW] → CLOSED → GATED → SETTLING → SETTLED`, plus `VOID`.
   Only the engine transitions. Illegal transitions raise. Every transition goes to an append-only `events` table.
 - **R-SM-2 (P0)** **Fail closed.** Any error, or fewer than 2 traders responding, VOIDs the market with the gate "failure: human review required". It never fails open into a merge.
@@ -116,18 +116,18 @@ information, and the price is the merge gate. Markets beat averaging because tra
 ### 4.4 Gate and GitHub
 - **R-GATE-1 (P0)** Commit status, context `pr-market`, with a link to the market page:
   `p ≥ A (0.90)` → `success` "auto-merge OK (p=0.94)"; `p < B (0.60)` → `failure` "blocked (p=0.21)"; `B ≤ p < A` → `pending` "escalation 1/2 (p=0.74)" and
-  another round (R-TRD-2). Still in between after `max_escalations` (default 2) → `failure` "no consensus (p=0.74)". No human band (DECISIONS #18).
+  another round (R-TRD-2). Still in between after `max_escalations` (default 2) → `failure` "no consensus (p=0.74)". No human band (DECISIONS #28).
   On open: `pending` "market open…". Thresholds are configurable per repo.
 - **R-GATE-2 (P0)** Trigger: a GitHub webhook (`pull_request` opened/synchronize/reopened) to `POST /api/hooks/github`, verified with `X-Hub-Signature-256`.
   Manual fallback: `prm market owner/repo#N`.
 - **R-GATE-3 (P0)** After settlement the description updates, e.g. "auto-merged (p=0.94) · settled YES · market right", or for a rejected PR
-  "blocked (p=0.21) · refunded · holdouts agree" (unpaid check, DECISIONS #19).
+  "blocked (p=0.21) · refunded · holdouts agree" (unpaid check, DECISIONS #29).
 - **R-GATE-4 (P1)** Opt-in auto-merge: with label `prm:auto-merge`, p ≥ 0.90 and other checks green, the factory merges.
 - **R-DOG-1 (P1 goal)** **Dogfooding.** The factory gates its own repo (it has a `.prm.toml` and its own private holdouts) once live, so we show "n real PRs priced today".
 
 ### 4.5 Settlement (the oracle)
 - **R-SET-0 (product)** The real oracle: a merged PR settles NO if it is reverted or a fix commit touches its added lines within N days (default 14), else YES
-  at day N; NO settles as soon as it is observed (DECISIONS #16). **P1:** a revert-detection settler (`settle/postmerge.py`). Until then R-SET-1 stands in.
+  at day N; NO settles as soon as it is observed (DECISIONS #26). **P1:** a revert-detection settler (`settle/postmerge.py`). Until then R-SET-1 stands in.
 - **R-SET-1 (P0, hackathon stand-in)** Outcome YES iff the holdout suite passes (JUnit: ≥1 test, 0 failures, 0 errors) AND no confirmed high-severity red-team finding
   (if a red-team command is configured). Merged markets pay out on it; rejected markets run it as an unpaid check only.
 - **R-SET-2 (P0)** **Local driver:** the factory downloads the PR head tree, syncs holdouts from the private repo, and runs `setup` + `settle.command` in a **sandboxed subprocess**:

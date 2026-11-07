@@ -31,11 +31,11 @@ PRM SERVER (FastAPI :8000)
    3. build 4 different evidence slices ──▶ 4 traders (1 LLM call each, parallel)
    4. LMSR: 3 mechanical rounds, random order, budget-capped
    5. close → gate → GitHub status `pr-market`: ≥A success / <B failure / in between → escalation round (traders see
-      rationales, re-estimate, trade) up to max_escalations, then failure "no consensus"   (DECISIONS #18)
+      rationales, re-estimate, trade) up to max_escalations, then failure "no consensus"   (DECISIONS #28)
    6. settle: driver=local → sandboxed subprocess runs target's settle command with holdouts mounted → JUnit counts
               driver=remote (P1) → target's CI runs holdouts, POSTs HMAC-signed result
-              (holdouts = hackathon stand-in for the post-merge revert/fix outcome, DECISIONS #16, #19)
-   7. merged → payouts → bankrolls (per repo); rejected → VOID, refund, holdouts run as an unpaid check (DECISIONS #17)
+              (holdouts = hackathon stand-in for the post-merge revert/fix outcome, DECISIONS #26, #29)
+   7. merged → payouts → bankrolls (per repo); rejected → VOID, refund, holdouts run as an unpaid check (DECISIONS #27)
    ▼
 SQLite: repos, traders, markets, beliefs, trades, positions, events, league_runs
    ▼
@@ -348,7 +348,7 @@ class MarketEngine:
 - Fewer than `min_traders` non-null beliefs → `void`.
 - Gate: `p ≥ auto_merge` → success "auto-merge OK (p=0.94)"; `p < human_review` (= B) → failure "blocked (p=0.21)"; in between → escalation round
   (each trader gets the others' rationales + price, one more belief, then `budget_trade` with its remaining cumulative cap), up to `max_escalations`;
-  still in between → failure "no consensus (p=0.74)". A rejected or no-consensus market is VOIDed (refund) after the unpaid holdout check. (DECISIONS #16–19)
+  still in between → failure "no consensus (p=0.74)". A rejected or no-consensus market is VOIDed (refund) after the unpaid holdout check. (DECISIONS #26–29)
 - Payout: YES → +yes_shares; NO → +no_shares. Agents don't trade during HUMAN_WINDOW. Humans use the same caps. Agent traders are auto-created per repo from the roster.
 
 ### 6.9 Settlement (`prm/settle/`)
