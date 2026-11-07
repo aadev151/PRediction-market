@@ -1,8 +1,9 @@
+import os
 from pathlib import Path
 
 import pytest
 
-from prm.cli import main
+from prm.cli import DOTENV_FILE, load_local_env, main
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -166,3 +167,32 @@ def test_demo_reset_requires_yes(monkeypatch, tmp_path, capsys):
 def test_demo_reset_refuses_database_url(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://h/db")
     assert main(["demo", "reset", "--yes"]) == 2
+
+
+A, B = "PRM_TEST_DOTENV_A", "PRM_TEST_DOTENV_B"
+
+
+@pytest.fixture
+def dotenv_dir(tmp_path, monkeypatch):
+    for name in (A, B, "PRM_NO_DOTENV"):
+        monkeypatch.delenv(name, raising=False)  # restored at teardown, even after load_dotenv sets them
+    (tmp_path / DOTENV_FILE).write_text(f"{A}=from-file\n{B}=from-file\n")
+    return tmp_path
+
+
+def test_local_env_fills_gaps_but_never_overrides_the_shell(dotenv_dir, monkeypatch):
+    monkeypatch.setenv(B, "from-shell")
+    assert load_local_env(dotenv_dir) is True
+    assert os.environ[A] == "from-file" and os.environ[B] == "from-shell"
+
+
+def test_local_env_opt_out_and_missing_file(dotenv_dir, monkeypatch, tmp_path_factory):
+    assert load_local_env(tmp_path_factory.mktemp("empty")) is False
+    monkeypatch.setenv("PRM_NO_DOTENV", "1")
+    assert load_local_env(dotenv_dir) is False and A not in os.environ
+
+
+def test_main_with_argv_never_loads_the_local_env(dotenv_dir, monkeypatch):
+    monkeypatch.chdir(dotenv_dir)
+    assert main(["validate", "--server", str(ROOT / "prm.server.toml")]) == 0
+    assert A not in os.environ

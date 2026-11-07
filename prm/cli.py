@@ -303,7 +303,26 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+DOTENV_FILE = ".env"
+NO_DOTENV_ENV = "PRM_NO_DOTENV"
+
+
+def load_local_env(cwd: Path | None = None) -> bool:
+    """Load ``./.env`` into ``os.environ`` for a command-line run; variables already set win (override=False).
+
+    Values are never printed or logged. Skipped when ``PRM_NO_DOTENV`` is set. True if a file was loaded.
+    """
+    if os.environ.get(NO_DOTENV_ENV):
+        return False
+    from dotenv import load_dotenv
+
+    path = (cwd or Path.cwd()) / DOTENV_FILE
+    return path.is_file() and load_dotenv(path, override=False)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    if argv is None:  # a real `prm …` run; tests pass argv and never see the developer's secrets
+        load_local_env()
     args = build_parser().parse_args(argv)
     return args.func(args)
 
