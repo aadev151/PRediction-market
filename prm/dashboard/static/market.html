@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PRediction Market · Market</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600;700;800&display=swap">
+  <link rel="stylesheet" href="/static/prm.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" integrity="sha512-CQBWl4fJHWbryGE+Pc7UAxWMUMNMWzWxF4SQo9CgkJIN1kx6djDQZjh3Y8SZ1d+6I+1zze6Z7kHXO7q3UyZAWw==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script type="module" src="/static/market.js"></script>
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="/"><b>PR</b>ediction market</a>
+    <nav class="nav" aria-label="Pages">
+      <a href="/">Andon</a>
+      <a href="/league">League</a>
+      <a href="/how">How it works</a>
+    </nav>
+    <span id="live" class="live" role="status">connecting…</span>
+  </header>
+  <main>
+    <section id="hero" class="hero" aria-live="polite"></section>
+    <div class="market-grid">
+      <div class="col">
+        <section class="card">
+          <h2>Price</h2>
+          <div class="chart-box"><canvas id="chart" aria-label="Price after each trade" role="img"></canvas></div>
+          <p id="chart-note" class="muted small"></p>
+        </section>
+        <section class="card">
+          <h2>Trades</h2>
+          <div id="trades" class="scroll-x"></div>
+        </section>
+        <section class="card">
+          <h2>Beliefs</h2>
+          <div id="beliefs"></div>
+        </section>
+      </div>
+      <div class="col">
+        <section class="card"><h2>Gate</h2><div id="gate"></div></section>
+        <section class="card"><h2>Settlement</h2><div id="settlement"></div></section>
+        <section class="card"><h2>Cost &amp; latency</h2><div id="cost"></div></section>
+        <section class="card"><h2>State timeline</h2><ol id="timeline" class="timeline"></ol></section>
+      </div>
+    </div>
+    <section class="card">
+      <h2>Description</h2>
+      <pre id="description" class="prose"></pre>
+    </section>
+    <section class="card">
+      <h2>Diff <span id="diff-stats" class="muted num"></span></h2>
+      <div id="diff" class="diff"></div>
+    </section>
+  </main>
+</body>
+</html>
